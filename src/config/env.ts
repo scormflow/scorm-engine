@@ -13,6 +13,13 @@ const baseSchema = z.object({
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_ATTEMPT_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
 
+  // How the runtime treats CMI writes that fail validation.
+  //  - lenient (default): mirror certified LMSes — accept the value, surface a
+  //    warning. Keeps real-world non-compliant content working.
+  //  - strict: reject the write and report an error. Useful for conformance
+  //    testing SCORM content against the spec.
+  SCORM_VALIDATION_MODE: z.enum(['lenient', 'strict']).default('lenient'),
+
   STORAGE_DRIVER: StorageDriver.default('local'),
   STORAGE_LOCAL_DIR: z.string().default('./.storage'),
 

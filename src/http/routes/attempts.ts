@@ -5,10 +5,13 @@ import {
   applyCommit,
   AttemptServiceError,
   startOrResumeAttempt,
+  type ValidationMode,
 } from '../../tracking/index.js';
 
 export interface AttemptsRouteDeps {
   prisma: PrismaClient;
+  /** CMI write validation policy; defaults to 'lenient'. */
+  validationMode?: ValidationMode;
 }
 
 interface StartBody {
@@ -34,6 +37,7 @@ interface CommitBody {
  */
 export function attemptsRoutes(deps: AttemptsRouteDeps): FastifyPluginAsync {
   const { prisma } = deps;
+  const validationMode: ValidationMode = deps.validationMode ?? 'lenient';
 
   return async function (app: FastifyInstance): Promise<void> {
     app.post<{ Params: { courseId: string }; Body: StartBody }>(
@@ -92,6 +96,7 @@ export function attemptsRoutes(deps: AttemptsRouteDeps): FastifyPluginAsync {
               attemptId: req.params.id,
               values: normalizeValues(body.values),
               terminate: body.terminate,
+              mode: validationMode,
             },
             prisma,
           );
@@ -99,6 +104,7 @@ export function attemptsRoutes(deps: AttemptsRouteDeps): FastifyPluginAsync {
             ok: result.errors.length === 0,
             terminated: result.terminated,
             errors: result.errors,
+            warnings: result.warnings,
             summary: result.summary,
           };
         } catch (err) {

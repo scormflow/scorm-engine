@@ -17,9 +17,10 @@ export type {
   ApplyCommitInput,
   ApplyCommitResult,
   RecordCommitInput,
-  SetValueError,
+  SetValueIssue,
   StartAttemptInput,
   StartedAttempt,
+  ValidationMode,
 } from './attempts.js';
 
 export {

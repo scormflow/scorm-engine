@@ -227,7 +227,7 @@ describe('attempts runtime routes', () => {
     expect(row.sessionTimeSeconds).toBe(300);
   });
 
-  it('reports invalid SetValue writes but still persists the valid ones', async () => {
+  it('lenient (default): accepts invalid writes as warnings and persists them', async () => {
     const attemptId = (await start({ learnerId: 'u1' })).json().attemptId;
     const res = await app.inject({
       method: 'POST',
@@ -242,10 +242,14 @@ describe('attempts runtime routes', () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.ok).toBe(false);
-    expect(body.errors).toHaveLength(1);
-    expect(body.errors[0].element).toBe('cmi.completion_status');
+    // Lenient mode never surfaces errors and the commit succeeds as a whole.
+    expect(body.ok).toBe(true);
+    expect(body.errors).toHaveLength(0);
+    expect(body.warnings).toHaveLength(1);
+    expect(body.warnings[0].element).toBe('cmi.completion_status');
+    // Valid write persisted; invalid one persisted verbatim in the snapshot.
     expect(harness.db.attempts[0].scoreScaled).toBe(0.5);
+    expect(harness.db.attempts[0].cmiSnapshot['cmi.completion_status']).toBe('banana');
   });
 
   it('terminates an attempt and blocks further commits', async () => {
@@ -294,5 +298,57 @@ describe('attempts runtime routes', () => {
   it('404s reading an unknown attempt', async () => {
     const res = await app.inject({ method: 'GET', url: `/api/v1/attempts/nope`, headers: auth });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('attempts runtime routes (strict validation mode)', () => {
+  let app: FastifyInstance;
+  let harness: ReturnType<typeof attemptsPrisma>;
+  const auth = { 'x-api-key': API_KEY };
+
+  beforeEach(async () => {
+    harness = attemptsPrisma();
+    app = await buildApp({
+      env: createTestEnv({ SCORM_VALIDATION_MODE: 'strict' }),
+      prisma: harness.prisma,
+      storage: new MemoryStorage(),
+    });
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it('rejects invalid writes as errors and does not persist them', async () => {
+    const started = await app.inject({
+      method: 'POST',
+      url: `/api/v1/courses/${COURSE_ID}/attempts`,
+      payload: { learnerId: 'u1' },
+      headers: auth,
+    });
+    const attemptId = started.json().attemptId;
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/attempts/${attemptId}/commit`,
+      headers: auth,
+      payload: {
+        values: {
+          'cmi.completion_status': 'banana', // invalid vocab
+          'cmi.score.scaled': '0.5', // valid
+        },
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.ok).toBe(false);
+    expect(body.errors).toHaveLength(1);
+    expect(body.errors[0].element).toBe('cmi.completion_status');
+    expect(body.warnings).toHaveLength(0);
+    // Valid write persisted; invalid one dropped (model keeps its default,
+    // never the rejected "banana").
+    expect(harness.db.attempts[0].scoreScaled).toBe(0.5);
+    expect(harness.db.attempts[0].cmiSnapshot['cmi.completion_status']).not.toBe('banana');
   });
 });

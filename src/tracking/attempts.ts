@@ -221,6 +221,12 @@ export async function recordCommit(input: RecordCommitInput, prisma: PrismaClien
   });
 }
 
+/**
+ * How the runtime treats CMI writes that fail data-model validation.
+ * See {@link ApplyCommitInput.mode} / `SCORM_VALIDATION_MODE`.
+ */
+export type ValidationMode = 'lenient' | 'strict';
+
 export interface ApplyCommitInput {
   tenantId: string;
   attemptId: string;
@@ -228,17 +234,27 @@ export interface ApplyCommitInput {
   values: Array<[element: string, value: string]>;
   /** When true, Terminate the session (final commit); otherwise Commit. */
   terminate?: boolean | undefined;
+  /** Validation policy; defaults to 'lenient'. */
+  mode?: ValidationMode | undefined;
 }
 
-export interface SetValueError {
+export interface SetValueIssue {
   element: string;
   code: number;
   message: string;
 }
 
 export interface ApplyCommitResult {
-  /** Per-element SetValue failures; the valid writes still persist. */
-  errors: SetValueError[];
+  /**
+   * Rejected writes (strict mode). The valid writes in the batch still persist;
+   * an error means that specific element was not stored.
+   */
+  errors: SetValueIssue[];
+  /**
+   * Accepted-but-nonconformant writes (lenient mode). The value was persisted
+   * as-is despite failing validation, mirroring certified-LMS behavior.
+   */
+  warnings: SetValueIssue[];
   summary: CmiSummary;
   state: CmiState;
   terminated: boolean;
@@ -248,11 +264,15 @@ export interface ApplyCommitResult {
  * Replay a batch of SetValue calls against a server-side {@link RuntimeSession}
  * seeded from the attempt's last snapshot, then persist the result.
  *
- * This is where the engine stays authoritative: every write is validated by the
- * real data model, invalid ones are collected (rather than trusted from the
- * client), and only the resulting snapshot is committed. Individual write
- * failures are reported but do not abort the commit — matching how a browser
- * runtime keeps going after a single rejected SetValue.
+ * Every write is validated by the real data model. What happens to a failed
+ * write depends on {@link ApplyCommitInput.mode}:
+ *  - `lenient` (default): the raw value is still persisted and reported as a
+ *    warning — real-world SCORM content routinely violates the spec and a
+ *    certified LMS keeps it working rather than rejecting the commit.
+ *  - `strict`: the write is dropped and reported as an error, for conformance
+ *    testing content against the spec.
+ *
+ * Either way the commit as a whole succeeds; a single bad write never aborts it.
  */
 export async function applyCommit(
   input: ApplyCommitInput,
@@ -292,20 +312,32 @@ export async function applyCommit(
   });
   session.initialize();
 
-  const errors: SetValueError[] = [];
+  const mode: ValidationMode = input.mode ?? 'lenient';
+  const errors: SetValueIssue[] = [];
+  const warnings: SetValueIssue[] = [];
+  // In lenient mode, values that fail validation are still persisted verbatim,
+  // so hold them aside to merge into the snapshot after the model commits.
+  const rejected: Array<[string, string]> = [];
+
   for (const [element, value] of input.values) {
     try {
       session.setValue(element, value);
     } catch (err) {
-      if (err instanceof ScormApiError) {
-        errors.push({ element, code: err.code, message: err.message });
+      if (!(err instanceof ScormApiError)) throw err;
+      const issue: SetValueIssue = { element, code: err.code, message: err.message };
+      if (mode === 'strict') {
+        errors.push(issue);
       } else {
-        throw err;
+        warnings.push(issue);
+        rejected.push([element, value]);
       }
     }
   }
 
   const snapshot = input.terminate ? session.terminate() : session.commit();
+  // Lenient: overlay the raw non-conformant writes so they round-trip on resume.
+  // Rollup/summary intentionally stay derived from the validated model only.
+  for (const [element, value] of rejected) snapshot.state[element] = value;
 
   await recordCommit(
     {
@@ -321,6 +353,7 @@ export async function applyCommit(
 
   return {
     errors,
+    warnings,
     summary: snapshot.summary,
     state: snapshot.state,
     terminated: Boolean(input.terminate),

@@ -52,7 +52,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     async (api) => {
       await api.register(registerRoutes);
       await api.register(coursesRoutes({ prisma, storage }), { prefix: '/courses' });
-      await api.register(attemptsRoutes({ prisma }));
+      await api.register(attemptsRoutes({ prisma, validationMode: env.SCORM_VALIDATION_MODE }));
     },
     { prefix: '/api/v1' },
   );

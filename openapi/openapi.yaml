@@ -368,22 +368,28 @@ paths:
   # ─────────────────────────────────────────────────────────────────────────
   # Attempts
   # ─────────────────────────────────────────────────────────────────────────
-  /attempts:
+  /courses/{courseId}/attempts:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
     post:
       tags: [Attempts]
-      summary: Start a new attempt
+      summary: Start or resume an attempt
       description: |
-        Creates a new attempt for a learner against a course. If a non-completed
-        attempt already exists and `resume=true`, returns that attempt instead.
+        Starts a new attempt for a learner against the course, or resumes the
+        learner's existing in-progress attempt for the same SCO. A fresh attempt
+        launches `ab-initio`; a resumed one launches `resume` and returns its last
+        committed CMI snapshot so the player can rehydrate the SCO.
+
+        Pass `restart: true` to force a brand-new attempt even when a resumable
+        one exists.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [courseId, learnerId]
+              required: [learnerId]
               properties:
-                courseId: { type: string, format: uuid }
                 learnerId:
                   type: string
                   description: |
@@ -391,17 +397,30 @@ paths:
                     this is the only learner identifier it knows.
                 learnerName:
                   type: string
-                  description: Optional display name passed to the SCO as `cmi.core.student_name`.
-                resume:
+                  description: Optional display name passed to the SCO as `student_name`.
+                scoId:
+                  type: string
+                  description: Target SCO; defaults to the course's primary SCO.
+                mode:
+                  type: string
+                  enum: [normal, browse, review]
+                  default: normal
+                restart:
                   type: boolean
-                  default: true
-                  description: If true, return the latest in-progress attempt instead of creating a new one.
+                  default: false
+                  description: Force a new attempt instead of resuming an open one.
       responses:
         '201':
-          description: Attempt created (or resumed)
+          description: New attempt created (ab-initio).
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Attempt' }
+              schema: { $ref: '#/components/schemas/StartAttemptResponse' }
+        '200':
+          description: Existing in-progress attempt resumed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StartAttemptResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /attempts/{attemptId}:
@@ -410,26 +429,10 @@ paths:
     get:
       tags: [Attempts]
       summary: Get an attempt
+      description: Returns the attempt's rolled-up state plus its objective and interaction rows.
       responses:
         '200':
           description: Attempt
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Attempt' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
-  /attempts/{attemptId}/finish:
-    parameters:
-      - $ref: '#/components/parameters/AttemptId'
-    post:
-      tags: [Attempts]
-      summary: Force-finalize an attempt
-      description: |
-        Normally an attempt is terminated by the SCO via `/runtime/{attemptId}/terminate`.
-        This endpoint exists for LMS-driven workflows (e.g. timeout, admin intervention).
-      responses:
-        '200':
-          description: Attempt finalized
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Attempt' }
@@ -440,58 +443,42 @@ paths:
   # ─────────────────────────────────────────────────────────────────────────
   # Design note: a SCORM SCO can issue dozens of SetValue calls per minute.
   # Rather than one round-trip per call, the in-browser player holds CMI state
-  # in memory and batches changes via /commit. This endpoint set reflects that.
-  /runtime/{attemptId}/initialize:
-    parameters:
-      - $ref: '#/components/parameters/AttemptId'
-    post:
-      tags: [Runtime]
-      summary: Initialize a runtime session
-      description: |
-        Called by the player when the SCO invokes `LMSInitialize` / `Initialize`.
-        Returns the full CMI data model snapshot (empty for a new attempt, populated
-        for a resume).
-      security:
-        - AttemptJWT: []
-        - ApiKeyAuth: []
-      responses:
-        '200':
-          description: Runtime state
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RuntimeState'
-        '409':
-          description: Attempt already terminated.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-
-  /runtime/{attemptId}/commit:
+  # in memory and flushes changes via a single batched /commit. Initialize is
+  # implicit in the start-attempt response (which carries the resume snapshot),
+  # and Terminate is folded into /commit via the `terminate` flag.
+  /attempts/{attemptId}/commit:
     parameters:
       - $ref: '#/components/parameters/AttemptId'
     post:
       tags: [Runtime]
       summary: Commit a batch of CMI value changes
       description: |
-        Persists a batch of CMI changes. The player should call this:
+        Replays a batch of `SetValue` writes through an authoritative server-side
+        runtime session seeded from the attempt's last snapshot, then persists the
+        result. The player should call this:
         - On `LMSCommit` / `Commit` from the SCO.
-        - On a debounced interval (e.g. every 10s) to reduce data loss risk.
+        - On a debounced interval (e.g. every 10s) to reduce data-loss risk.
         - On `beforeunload` (with `keepalive: true`).
+
+        Set `terminate: true` to close the session out (`LMSFinish` / `Terminate`),
+        performing a final commit and finalizing the attempt.
 
         Keys use SCORM-version-native naming:
         - SCORM 1.2: `cmi.core.lesson_status`, `cmi.suspend_data`, ...
         - SCORM 2004: `cmi.completion_status`, `cmi.success_status`, ...
 
-        **Validation policy:** the engine mirrors real-world LMS behavior — invalid
-        or unknown CMI keys are silently accepted and surfaced as `warnings` in the
-        response (and in server logs) rather than rejecting the batch. This matches
-        what certified commercial LMSes do; SCORM content in the wild routinely
-        violates the spec and rejecting commits would break otherwise-functional
-        courses. Use the `warnings` array for observability, not for control flow.
-      security:
-        - AttemptJWT: []
-        - ApiKeyAuth: []
+        **Validation policy** (server-configured via `SCORM_VALIDATION_MODE`):
+        - `lenient` (default): mirrors certified commercial LMSes — writes that
+          fail validation are still persisted and reported in `warnings`. SCORM
+          content in the wild routinely violates the spec, and rejecting commits
+          would break otherwise-functional courses. A single bad write never
+          aborts the batch, so `ok` stays `true`.
+        - `strict`: writes that fail validation are dropped and reported in
+          `errors` (`ok` is `false`), for conformance-testing content. Valid
+          writes in the same batch still persist.
+
+        Either way the commit as a whole succeeds; inspect `errors`/`warnings` for
+        per-element detail, not for retry control flow.
       requestBody:
         required: true
         content:
@@ -500,43 +487,17 @@ paths:
               $ref: '#/components/schemas/CommitRequest'
       responses:
         '200':
-          description: Commit accepted (possibly with warnings).
+          description: Commit accepted (possibly with warnings or per-element errors).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CommitResponse'
-
-  /runtime/{attemptId}/terminate:
-    parameters:
-      - $ref: '#/components/parameters/AttemptId'
-    post:
-      tags: [Runtime]
-      summary: Terminate a runtime session
-      description: |
-        Called by the player when the SCO invokes `LMSFinish` / `Terminate`.
-        Persists any final batch of values and finalizes the attempt.
-      security:
-        - AttemptJWT: []
-        - ApiKeyAuth: []
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                values:
-                  type: object
-                  additionalProperties: true
-                  description: Final batch of CMI values to persist before termination.
-      responses:
-        '200':
-          description: Attempt terminated
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Attempt already finished.
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  attempt: { $ref: '#/components/schemas/Attempt' }
+              schema: { $ref: '#/components/schemas/Error' }
 
   # ─────────────────────────────────────────────────────────────────────────
   # Analytics
@@ -842,60 +803,123 @@ components:
           enum: [ab_initio, resume, '']
           description: SCORM `cmi.core.entry` / `cmi.entry`.
 
+    StartAttemptResponse:
+      type: object
+      required: [attemptId, resumed, version, cmi]
+      properties:
+        attemptId: { type: string, format: uuid }
+        resumed:
+          type: boolean
+          description: True when an existing in-progress attempt was resumed.
+        version: { $ref: '#/components/schemas/ScormVersion' }
+        entry:
+          type: string
+          enum: [ab-initio, resume, '']
+          description: SCORM `cmi.core.entry` / `cmi.entry` the SCO should launch with.
+        launch:
+          type: object
+          description: Read-only launch context the player injects before Initialize.
+          properties:
+            learnerId: { type: string }
+            learnerName: { type: string }
+            mode: { type: string, enum: [normal, browse, review] }
+            totalTime:
+              type: string
+              description: Accumulated time from prior attempts, in the edition's timespan format.
+            masteryScore: { type: number, nullable: true }
+        cmi:
+          type: object
+          additionalProperties: true
+          description: |
+            Previously-committed CMI snapshot to rehydrate the SCO on resume. Empty
+            object for a new (ab-initio) attempt.
+          example:
+            cmi.location: page_4
+            cmi.suspend_data: '{"chapter":2}'
+
     CommitRequest:
       type: object
       required: [values]
       properties:
         values:
-          type: object
-          additionalProperties: true
+          oneOf:
+            - type: object
+              additionalProperties: { type: string }
+            - type: array
+              items:
+                type: array
+                minItems: 2
+                maxItems: 2
+                items: { type: string }
           description: |
-            Object of CMI key → value pairs to persist. Keys must match the
-            SCORM version of the course (validated server-side).
+            CMI writes to replay, as an object of key → value pairs or an ordered
+            array of `[key, value]` pairs (use the array form when write order
+            matters). Keys must match the SCORM version of the course.
           example:
-            cmi.core.lesson_status: completed
-            cmi.core.score.raw: 87
-            cmi.suspend_data: '{"chapter":3}'
-        sessionTimeDeltaSeconds:
-          type: integer
-          minimum: 0
+            cmi.completion_status: completed
+            cmi.score.scaled: '0.87'
+            cmi.session_time: PT12M30S
+        terminate:
+          type: boolean
+          default: false
           description: |
-            Additional session time to add to the attempt's running total. Sent by
-            the player rather than the SCO so the server controls the authoritative
-            elapsed time.
+            When true, Terminate the session (final commit) and finalize the
+            attempt instead of leaving it open for further commits.
 
     CommitResponse:
       type: object
-      required: [ok, committedAt, attempt]
+      required: [ok, terminated, errors, warnings, summary]
       properties:
-        ok: { type: boolean }
-        committedAt: { type: string, format: date-time }
-        attempt: { $ref: '#/components/schemas/Attempt' }
+        ok:
+          type: boolean
+          description: False only in strict mode when one or more writes were rejected.
+        terminated:
+          type: boolean
+          description: True when this commit finalized the attempt.
+        errors:
+          type: array
+          description: |
+            Writes rejected in strict mode (not persisted). Empty in lenient mode.
+          items: { $ref: '#/components/schemas/CommitIssue' }
         warnings:
           type: array
           description: |
-            Non-fatal issues with the committed batch. Values are still persisted
-            (see endpoint description for rationale). Use for observability and
-            content-author feedback, not for retry logic.
-          items: { $ref: '#/components/schemas/CommitWarning' }
+            Nonconformant writes accepted in lenient mode (persisted verbatim).
+            Empty in strict mode. Use for observability, not retry logic.
+          items: { $ref: '#/components/schemas/CommitIssue' }
+        summary: { $ref: '#/components/schemas/RuntimeSummary' }
 
-    CommitWarning:
+    CommitIssue:
       type: object
-      required: [code, key, message]
+      required: [element, code, message]
       properties:
-        code:
+        element:
           type: string
-          enum:
-            - unknown_key
-            - read_only_key
-            - invalid_value_type
-            - out_of_range
-            - invalid_format
-            - version_mismatch
-          description: Stable warning code for filtering / metrics.
-        key: { type: string }
-        value: {}
+          description: The CMI element the write targeted.
+        code:
+          type: integer
+          description: SCORM API error code (edition-specific numeric code).
         message: { type: string }
+
+    RuntimeSummary:
+      type: object
+      description: Edition-neutral rollup of the outcome-bearing CMI elements.
+      properties:
+        completionStatus:
+          type: string
+          enum: [completed, incomplete, 'not attempted', unknown]
+        successStatus:
+          type: string
+          enum: [passed, failed, unknown]
+        scoreRaw: { type: number, nullable: true }
+        scoreMin: { type: number, nullable: true }
+        scoreMax: { type: number, nullable: true }
+        scoreScaled: { type: number, nullable: true }
+        progressMeasure: { type: number, nullable: true }
+        lessonLocation: { type: string, nullable: true }
+        suspendData: { type: string, nullable: true }
+        sessionTime: { type: string, nullable: true }
+        exit: { type: string, nullable: true }
 
     # ── Analytics ────────────────────────────────────────────────────────
     AnalyticsOverview:
