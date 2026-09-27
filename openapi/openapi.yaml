@@ -116,16 +116,39 @@ paths:
         - name: theme
           in: query
           schema: { type: string, enum: [light, dark, auto], default: auto }
+        - name: source
+          in: query
+          description: |
+            Where the SCO content comes from. `engine` (default) serves the
+            uploaded package via `/courses/{id}/content/*` (and sets an auth
+            cookie so sub-resources authenticate). `external` embeds the URL in
+            `src` instead.
+          schema: { type: string, enum: [engine, external], default: engine }
+        - name: src
+          in: query
+          description: Absolute SCO entry URL. Required when `source=external`.
+          schema: { type: string, format: uri }
         - name: scoId
           in: query
           schema: { type: string }
-          description: Optional — override the default SCO.
+          description: Optional — override the default SCO (engine source only).
       responses:
         '200':
           description: HTML player page
           content:
             text/html:
               schema: { type: string }
+        '400':
+          description: Missing content source (e.g. source=external without src).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Token is not valid for this attempt.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /runtime.js:
@@ -343,6 +366,42 @@ paths:
                   launchUrl: { type: string, format: uri }
                   expiresAt: { type: string, format: date-time }
 
+  /courses/{courseId}/content/{path}:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+      - name: path
+        in: path
+        required: true
+        description: File path within the extracted package (e.g. `index.html`, `assets/app.js`).
+        schema: { type: string }
+    get:
+      tags: [Courses]
+      summary: Stream an extracted package file (engine-hosted content)
+      description: |
+        Serves a file from an uploaded course's extracted package. Used by the
+        engine-hosted player.
+
+        Auth is dual: a tenant **API key** (server-side), or an **attempt token**
+        scoped to an attempt on this course — supplied as a bearer token, `?token=`,
+        or the `sf_attempt` cookie the `/play` page sets so the SCO's relative
+        sub-resource requests authenticate automatically.
+      security:
+        - ApiKeyAuth: []
+        - AttemptJWT: []
+      responses:
+        '200':
+          description: The requested file.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '400':
+          description: Invalid path (e.g. traversal attempt).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /courses/validate:
     post:
       tags: [Courses]
@@ -450,12 +509,22 @@ paths:
         CMI, otherwise `ab-initio`. This is the read side of the runtime loop; use
         the start-attempt response for the initial launch and this endpoint to
         re-fetch state (e.g. after a reload) without creating a new attempt.
+
+        Auth is dual: a tenant API key, or an attempt token scoped to this attempt.
+      security:
+        - ApiKeyAuth: []
+        - AttemptJWT: []
       responses:
         '200':
           description: Runtime state
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RuntimeState' }
+        '403':
+          description: Token is not valid for this attempt.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -499,6 +568,12 @@ paths:
 
         Either way the commit as a whole succeeds; inspect `errors`/`warnings` for
         per-element detail, not for retry control flow.
+
+        Auth is dual: a tenant API key (server-side), or an attempt token scoped
+        to this attempt (browser player).
+      security:
+        - ApiKeyAuth: []
+        - AttemptJWT: []
       requestBody:
         required: true
         content:
@@ -512,6 +587,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CommitResponse'
+        '403':
+          description: Token is not valid for this attempt.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Attempt already finished.

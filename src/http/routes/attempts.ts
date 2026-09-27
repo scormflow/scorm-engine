@@ -88,7 +88,8 @@ export function attemptsRoutes(deps: AttemptsRouteDeps): FastifyPluginAsync {
 
     app.post<{ Params: { id: string }; Body: CommitBody }>(
       '/attempts/:id/commit',
-      { preHandler: app.requireApiKey },
+      // Browser players authenticate with an attempt token; servers use the API key.
+      { preHandler: app.requireAttemptAccess },
       async (req, reply) => {
         const body = req.body ?? {};
         try {
@@ -117,7 +118,7 @@ export function attemptsRoutes(deps: AttemptsRouteDeps): FastifyPluginAsync {
 
     app.get<{ Params: { id: string } }>(
       '/attempts/:id/runtime',
-      { preHandler: app.requireApiKey },
+      { preHandler: app.requireAttemptAccess },
       async (req, reply) => {
         const state = await getRuntimeState(req.tenantId, req.params.id, prisma);
         if (!state) {
