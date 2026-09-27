@@ -12,6 +12,8 @@
  */
 import type { PrismaClient } from '../db/client.js';
 import type { ScormVersion } from '../parser/manifest.js';
+import { ScormApiError } from '../runtime/errors.js';
+import { RuntimeSession } from '../runtime/session.js';
 import type { CmiState, CmiSummary, RuntimeContext } from '../runtime/datamodel/types.js';
 import { secondsToIso8601 } from '../runtime/datamodel/validators.js';
 import {
@@ -40,7 +42,7 @@ export interface StartAttemptInput {
   learnerName?: string | undefined;
   mode?: string | undefined;
   /** Force a brand-new attempt even if a resumable one exists. */
-  restart?: boolean;
+  restart?: boolean | undefined;
 }
 
 export interface StartedAttempt {
@@ -147,7 +149,7 @@ export interface RecordCommitInput {
   summary: CmiSummary;
   version: ScormVersion;
   /** When true, the attempt is closed out (Terminate) rather than left open. */
-  terminal?: boolean;
+  terminal?: boolean | undefined;
 }
 
 /**
@@ -217,6 +219,112 @@ export async function recordCommit(input: RecordCommitInput, prisma: PrismaClien
       data: { attemptId: attempt.id, values: input.state as Record<string, string> },
     });
   });
+}
+
+export interface ApplyCommitInput {
+  tenantId: string;
+  attemptId: string;
+  /** Batched SetValue pairs, applied in order. */
+  values: Array<[element: string, value: string]>;
+  /** When true, Terminate the session (final commit); otherwise Commit. */
+  terminate?: boolean | undefined;
+}
+
+export interface SetValueError {
+  element: string;
+  code: number;
+  message: string;
+}
+
+export interface ApplyCommitResult {
+  /** Per-element SetValue failures; the valid writes still persist. */
+  errors: SetValueError[];
+  summary: CmiSummary;
+  state: CmiState;
+  terminated: boolean;
+}
+
+/**
+ * Replay a batch of SetValue calls against a server-side {@link RuntimeSession}
+ * seeded from the attempt's last snapshot, then persist the result.
+ *
+ * This is where the engine stays authoritative: every write is validated by the
+ * real data model, invalid ones are collected (rather than trusted from the
+ * client), and only the resulting snapshot is committed. Individual write
+ * failures are reported but do not abort the commit — matching how a browser
+ * runtime keeps going after a single rejected SetValue.
+ */
+export async function applyCommit(
+  input: ApplyCommitInput,
+  prisma: PrismaClient,
+): Promise<ApplyCommitResult> {
+  const attempt = await prisma.attempt.findFirst({
+    where: { id: input.attemptId, tenantId: input.tenantId },
+    select: {
+      id: true,
+      status: true,
+      cmiSnapshot: true,
+      course: { select: { scormVersion: true, masteryScore: true } },
+      learner: { select: { externalId: true, name: true } },
+    },
+  });
+  if (!attempt) {
+    throw new AttemptServiceError('Attempt not found', 'attempt_not_found');
+  }
+  if (attempt.status !== 'IN_PROGRESS') {
+    throw new AttemptServiceError('Attempt is already finished', 'attempt_finished', 409);
+  }
+
+  const version = SPEC_VERSION[attempt.course.scormVersion] ?? 'SCORM_1_2';
+  const context: RuntimeContext = {
+    learnerId: attempt.learner.externalId,
+    learnerName: attempt.learner.name ?? attempt.learner.externalId,
+    credit: 'credit',
+    mode: 'normal',
+    entry: 'resume',
+    masteryScore: attempt.course.masteryScore,
+  };
+
+  const session = new RuntimeSession({
+    version,
+    context,
+    resumeState: (attempt.cmiSnapshot as CmiState) ?? undefined,
+  });
+  session.initialize();
+
+  const errors: SetValueError[] = [];
+  for (const [element, value] of input.values) {
+    try {
+      session.setValue(element, value);
+    } catch (err) {
+      if (err instanceof ScormApiError) {
+        errors.push({ element, code: err.code, message: err.message });
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  const snapshot = input.terminate ? session.terminate() : session.commit();
+
+  await recordCommit(
+    {
+      tenantId: input.tenantId,
+      attemptId: input.attemptId,
+      state: snapshot.state,
+      summary: snapshot.summary,
+      version,
+      terminal: input.terminate,
+    },
+    prisma,
+  );
+
+  return {
+    errors,
+    summary: snapshot.summary,
+    state: snapshot.state,
+    terminated: Boolean(input.terminate),
+  };
 }
 
 // ---- helpers ---------------------------------------------------------------

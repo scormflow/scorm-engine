@@ -11,6 +11,7 @@ import type { StorageAdapter } from '../storage/types.js';
 import { apiKeyAuth } from '../auth/api-key.js';
 import { registerRoutes } from './routes/index.js';
 import { coursesRoutes } from './routes/courses.js';
+import { attemptsRoutes } from './routes/attempts.js';
 
 export interface AppDeps {
   env: Env;
@@ -51,6 +52,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     async (api) => {
       await api.register(registerRoutes);
       await api.register(coursesRoutes({ prisma, storage }), { prefix: '/courses' });
+      await api.register(attemptsRoutes({ prisma }));
     },
     { prefix: '/api/v1' },
   );

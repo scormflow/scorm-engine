@@ -8,12 +8,16 @@
  * runtime data without touching Prisma.
  */
 export {
+  applyCommit,
   AttemptServiceError,
   recordCommit,
   startOrResumeAttempt,
 } from './attempts.js';
 export type {
+  ApplyCommitInput,
+  ApplyCommitResult,
   RecordCommitInput,
+  SetValueError,
   StartAttemptInput,
   StartedAttempt,
 } from './attempts.js';
