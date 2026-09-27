@@ -10,6 +10,7 @@
 export {
   applyCommit,
   AttemptServiceError,
+  getRuntimeState,
   recordCommit,
   startOrResumeAttempt,
 } from './attempts.js';
@@ -17,6 +18,7 @@ export type {
   ApplyCommitInput,
   ApplyCommitResult,
   RecordCommitInput,
+  RuntimeState,
   SetValueIssue,
   StartAttemptInput,
   StartedAttempt,

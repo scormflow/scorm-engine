@@ -4,6 +4,7 @@ import type { PrismaClient } from '../../db/client.js';
 import {
   applyCommit,
   AttemptServiceError,
+  getRuntimeState,
   startOrResumeAttempt,
   type ValidationMode,
 } from '../../tracking/index.js';
@@ -110,6 +111,18 @@ export function attemptsRoutes(deps: AttemptsRouteDeps): FastifyPluginAsync {
         } catch (err) {
           return handleServiceError(err, reply);
         }
+      },
+    );
+
+    app.get<{ Params: { id: string } }>(
+      '/attempts/:id/runtime',
+      { preHandler: app.requireApiKey },
+      async (req, reply) => {
+        const state = await getRuntimeState(req.tenantId, req.params.id, prisma);
+        if (!state) {
+          return reply.code(404).send({ code: 'attempt_not_found', message: 'Attempt not found' });
+        }
+        return state;
       },
     );
 

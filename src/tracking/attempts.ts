@@ -152,6 +152,49 @@ export interface RecordCommitInput {
   terminal?: boolean | undefined;
 }
 
+export interface RuntimeState {
+  attemptId: string;
+  version: ScormVersion;
+  status: string;
+  /** CMI snapshot keyed by SCORM-native paths; empty for a never-committed attempt. */
+  cmi: CmiState;
+  entry: 'ab-initio' | 'resume';
+  learner: { id: string; name: string | null };
+}
+
+/**
+ * Read the runtime state a player needs to (re)hydrate a SCO: the CMI snapshot,
+ * the course's SCORM version, and the entry mode. Entry is `resume` once the
+ * attempt has any committed CMI, otherwise `ab-initio`.
+ */
+export async function getRuntimeState(
+  tenantId: string,
+  attemptId: string,
+  prisma: PrismaClient,
+): Promise<RuntimeState | null> {
+  const attempt = await prisma.attempt.findFirst({
+    where: { id: attemptId, tenantId },
+    select: {
+      id: true,
+      status: true,
+      cmiSnapshot: true,
+      course: { select: { scormVersion: true } },
+      learner: { select: { externalId: true, name: true } },
+    },
+  });
+  if (!attempt) return null;
+
+  const cmi = (attempt.cmiSnapshot as CmiState) ?? {};
+  return {
+    attemptId: attempt.id,
+    version: SPEC_VERSION[attempt.course.scormVersion] ?? 'SCORM_1_2',
+    status: attempt.status,
+    cmi,
+    entry: Object.keys(cmi).length > 0 ? 'resume' : 'ab-initio',
+    learner: { id: attempt.learner.externalId, name: attempt.learner.name ?? null },
+  };
+}
+
 /**
  * Persist a commit (or terminate) snapshot: update the scalar Attempt columns,
  * replace the objective/interaction child rows, append a commit-log entry, and

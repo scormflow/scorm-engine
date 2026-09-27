@@ -299,6 +299,38 @@ describe('attempts runtime routes', () => {
     const res = await app.inject({ method: 'GET', url: `/api/v1/attempts/nope`, headers: auth });
     expect(res.statusCode).toBe(404);
   });
+
+  it('serves runtime state as ab-initio for a fresh attempt', async () => {
+    const attemptId = (await start({ learnerId: 'u1', learnerName: 'Ada' })).json().attemptId;
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/attempts/${attemptId}/runtime`,
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.version).toBe('SCORM_2004_4');
+    expect(body.entry).toBe('ab-initio');
+    expect(body.cmi).toEqual({});
+    expect(body.learner).toEqual({ id: 'u1', name: 'Ada' });
+  });
+
+  it('serves runtime state as resume once CMI has been committed', async () => {
+    const attemptId = (await start({ learnerId: 'u1' })).json().attemptId;
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/attempts/${attemptId}/commit`,
+      headers: auth,
+      payload: { values: { 'cmi.location': 'page-2' } },
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/attempts/${attemptId}/runtime`,
+      headers: auth,
+    });
+    expect(res.json().entry).toBe('resume');
+    expect(res.json().cmi['cmi.location']).toBe('page-2');
+  });
 });
 
 describe('attempts runtime routes (strict validation mode)', () => {
