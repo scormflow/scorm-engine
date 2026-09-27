@@ -115,7 +115,7 @@ Database: PostgreSQL (production) or SQLite (dev). ORM: Prisma. Schema in [`pris
 
 ## Roadmap
 
-Checkboxes reflect the actual state of `main`. Source of truth for scope: [`../scope.md`](../scope.md).
+Checkboxes reflect the actual state of `main`.
 
 ### Phase 1 — MVP (foundation)
 - [x] Repo init, TypeScript strict mode, Fastify app skeleton
@@ -133,8 +133,8 @@ Checkboxes reflect the actual state of `main`. Source of truth for scope: [`../s
 - [ ] S3 / R2 / MinIO storage driver
 - [ ] JWT issuance for runtime / player tokens
 - [ ] Attempt lifecycle routes (`/attempts/start`, `/:id`, `/:id/finish`)
-- [ ] CMI data model + value validation (SCORM 1.2)
-- [ ] CMI data model + value validation (SCORM 2004)
+- [x] CMI data model + value validation (SCORM 1.2)
+- [x] CMI data model + value validation (SCORM 2004)
 - [ ] Runtime API routes (`initialize` / `value` / `commit` / `terminate`)
 - [ ] Resume support (suspend_data, lesson_location persistence)
 - [ ] Basic analytics endpoints (course / learner / overview)
