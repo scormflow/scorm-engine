@@ -81,7 +81,7 @@
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
     "@types/node": "^20.16.5",
-    "@types/yauzl": "^2.10.3",
+    "@types/yauzl": "^3.4.0",
     "adm-zip": "^0.5.17",
     "prisma": "^5.20.0",
     "supertest": "^7.0.0",
