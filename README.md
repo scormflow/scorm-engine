@@ -356,8 +356,7 @@ Checkboxes reflect the actual state of `main`.
 
 ```bash
 pnpm install                # or npm install
-pnpm db:generate            # generate Prisma client
-pnpm db:migrate             # run migrations
+pnpm db:push                # sync prisma/schema.prisma to DATABASE_URL (+ regenerate client)
 pnpm dev                    # tsx watch
 pnpm test                   # vitest
 pnpm openapi:lint           # validate OpenAPI spec
@@ -365,6 +364,29 @@ pnpm build                  # tsc → dist/
 ```
 
 Requires Node ≥ 20.
+
+### Database schema
+
+The engine is not deployed anywhere yet, so there are no migration files:
+`prisma/schema.prisma` is the source of truth and every schema change (such as
+the `Certificate` table) reaches your database with:
+
+```bash
+npm run db:push             # = prisma db push: create/alter tables to match the schema, regenerate the client
+```
+
+`db push` may drop data when a change is destructive (it asks first), so it is
+for development databases only. Before the first real deployment, switch to
+migrations once:
+
+```bash
+npm run db:migrate:init     # = prisma migrate dev --name init: writes prisma/migrations/<ts>_init
+npm run db:migrate          # later schema changes: prisma migrate dev --name <change>
+npm run db:migrate:deploy   # on the server / in CI: apply pending migrations
+```
+
+Commit `prisma/migrations/` from then on; it ships in the npm package and CI
+already runs `prisma migrate deploy` against it.
 
 ---
 
