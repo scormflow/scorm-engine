@@ -19,6 +19,8 @@ import { embedRoutes } from './routes/embed.js';
 import { xapiRoutes } from './routes/xapi.js';
 import { cmi5Routes } from './routes/cmi5.js';
 import { webhookRoutes } from './routes/webhooks.js';
+import { certificateRoutes } from './routes/certificates.js';
+import { CertificateIssuer } from '../certificates/index.js';
 import { WebhookDispatcher } from '../webhooks/index.js';
 import { TenantRateLimiter, tenantRateLimit } from './rate-limit.js';
 import { registerHealthRoutes } from './health.js';
@@ -91,6 +93,19 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       new TenantRateLimiter({ max: env.RATE_LIMIT_MAX, windowSeconds: env.RATE_LIMIT_WINDOW_SECONDS }),
   });
 
+  const certificates = env.CERTIFICATES_ENABLED
+    ? new CertificateIssuer(
+        prisma,
+        {
+          issuer: env.CERTIFICATE_ISSUER,
+          verifyBaseUrl: env.CERTIFICATE_VERIFY_BASE_URL,
+          accentColor: env.CERTIFICATE_ACCENT_COLOR,
+        },
+        webhooks,
+        app.log,
+      )
+    : undefined;
+
   const health = { prisma, storage, version: ENGINE_VERSION };
   registerHealthRoutes(app, health, { health: '/healthz', ready: '/readyz' });
 
@@ -100,7 +115,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await api.register(registerRoutes);
       await api.register(coursesRoutes({ prisma, storage }), { prefix: '/courses' });
       await api.register(contentRoutes({ prisma, storage }));
-      await api.register(attemptsRoutes({ prisma, validationMode: env.SCORM_VALIDATION_MODE, events: webhooks }));
+      await api.register(
+        attemptsRoutes({ prisma, validationMode: env.SCORM_VALIDATION_MODE, events: webhooks, certificates }),
+      );
+      if (certificates) await api.register(certificateRoutes({ certificates }));
       await api.register(analyticsRoutes({ prisma }), { prefix: '/analytics' });
       await api.register(embedRoutes({ prisma, env }));
       await api.register(xapiRoutes({ prisma, storage, env, events: webhooks }), { prefix: '/xapi' });

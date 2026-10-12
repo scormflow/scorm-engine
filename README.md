@@ -116,6 +116,15 @@ POST   /api/v1/webhooks/:id/rotate-secret     Replace the signing secret
 POST   /api/v1/webhooks/:id/test              Send a signed webhook.test event
 GET    /api/v1/webhooks/:id/deliveries        Delivery log (filter by status / event)
 POST   /api/v1/webhooks/deliveries/:id/retry  Re-send a delivery, incl. dead-lettered ones
+
+GET    /api/v1/certificates                   List certificates (filter by learner / course / status)
+GET    /api/v1/certificates/:id               One certificate
+GET    /api/v1/certificates/:id/pdf           The certificate PDF (`?download=1` to save)
+POST   /api/v1/certificates/:id/revoke        Revoke (verification then reports it invalid)
+GET    /api/v1/certificates/verify/:serial    Public check of a printed certificate code
+GET    /api/v1/attempts/:id/certificate       The attempt's certificate (attempt token OK)
+GET    /api/v1/attempts/:id/certificate/pdf   Its PDF (attempt token via header or `?token=`)
+POST   /api/v1/attempts/:id/certificate       Issue now (idempotent; 409 if not eligible)
 ```
 
 Auth: `X-API-Key: <api-key>` for tenant calls (the LRS included); a short-lived,
@@ -182,7 +191,7 @@ Events: `attempt.started`, `attempt.suspended`, `attempt.terminated`, `course.co
 `course.passed`, `course.failed`, `score.updated` (SCORM attempts — each fires on
 the transition, not on every commit); `objective.mastered` (a SCORM objective's
 success status first becomes `passed`, matched by objective id);
-`cmi5.session.terminated`, `cmi5.session.abandoned`, `cmi5.au.waived`,
+`certificate.issued`, `certificate.revoked`; `cmi5.session.terminated`, `cmi5.session.abandoned`, `cmi5.au.waived`,
 `cmi5.block.satisfied`, `cmi5.course.satisfied`; `xapi.statement.stored` (once
 per newly stored LRS statement — including cmi5 and LMS-issued ones, never for a
 duplicate resend; `data.statement` is the stored statement); and `webhook.test`.
@@ -204,6 +213,26 @@ share one database. Endpoint URLs on localhost / private / link-local addresses
 are refused unless `WEBHOOK_ALLOW_PRIVATE_URLS=true`; this check does not resolve
 DNS, so pair it with egress filtering if tenants are untrusted.
 
+### Certificates
+
+The first time an attempt is completed and not failed (SCORM 1.2 `passed` /
+`completed`; SCORM 2004 `completion_status=completed` with any `success_status`
+but `failed`), the engine issues a certificate for it and emits
+`certificate.issued`. Each attempt gets at most one. The learner's name, the
+course title and the score (scaled × 100, else raw within min/max) are
+snapshotted at issue time, and the PDF — one landscape A4 page in the
+standard Helvetica fonts, with no PDF library involved — is rendered on demand
+from them. Issuing never fails a commit; if it errors, the error is logged and
+`POST /attempts/:id/certificate` issues it later (the same call backfills
+attempts that finished before certificates were turned on).
+
+Every certificate prints a serial like `7KQ2-M9XD-4TPA`. `GET
+/certificates/verify/:serial` needs no credentials and returns only what is
+printed, plus whether it has been revoked; set `CERTIFICATE_VERIFY_BASE_URL` to
+your own verification page to have its link (`<base>/<serial>`) printed too.
+A learner-facing page can fetch `/attempts/:id/certificate[/pdf]` with the
+attempt's player token. Turn the feature off with `CERTIFICATES_ENABLED=false`.
+
 ---
 
 ## Architecture
@@ -216,6 +245,7 @@ src/
 ├── xapi/         Built-in LRS (statements, documents, lookups) [done]
 ├── cmi5/         cmi5 course structure, launch, statement rules [done]
 ├── webhooks/     Endpoints, signing, delivery + retry worker   [done]
+├── certificates/ Completion certificates + PDF writer          [done]
 ├── storage/      Storage adapters: local disk, S3 / R2 / MinIO [done]
 ├── analytics/    Analytics + reporting                         [done]
 ├── http/         Fastify routes + runtime bridge               [done]
@@ -254,6 +284,10 @@ Database: PostgreSQL (production) or SQLite (dev). ORM: Prisma. Schema in [`pris
 | `WEBHOOK_TIMEOUT_MS` | Per-attempt request timeout (default 10000) |
 | `WEBHOOK_WORKER_INTERVAL_MS` | Retry poll interval; `0` disables the poller (default 5000) |
 | `WEBHOOK_ALLOW_PRIVATE_URLS` | Allow endpoints on localhost / private networks (default false) |
+| `CERTIFICATES_ENABLED` | Issue PDF certificates on completion (default true) |
+| `CERTIFICATE_ISSUER` | Organization printed as the issuer (default `ScormFlow`) |
+| `CERTIFICATE_VERIFY_BASE_URL` | Public verification page; `<base>/<serial>` is printed on each certificate |
+| `CERTIFICATE_ACCENT_COLOR` | `#rrggbb` for the certificate frame and heading (default `#1f4e79`) |
 
 ---
 
@@ -303,7 +337,7 @@ Checkboxes reflect the actual state of `main`.
 - [x] Webhook system (signed payloads, retries, dead-letter, delivery log)
 - [x] Webhook events for xAPI statements and SCORM objectives (`objective.mastered`)
 - [x] Offline sync queue + reconciliation (`POST /attempts/:id/sync`, idempotent `seq` replay, conflict reporting)
-- [ ] Certificate engine (PDF generation on completion)
+- [x] Certificate engine (PDF generation on completion, public verification, revocation)
 - [ ] Event bus (BullMQ / Redis streams)
 - [ ] Plugin system (`plugins: [analyticsPlugin(), certificatePlugin()]`)
 

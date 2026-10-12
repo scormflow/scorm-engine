@@ -59,6 +59,17 @@ const baseSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().int().min(0).default(0),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
 
+  // Completion certificates. When enabled, an attempt that is completed and not
+  // failed gets a PDF certificate automatically. CERTIFICATE_VERIFY_BASE_URL is
+  // the public page a reader checks a certificate at; the serial is appended
+  // and printed on the PDF (leave empty to print none).
+  CERTIFICATES_ENABLED: boolish.default(true),
+  CERTIFICATE_ISSUER: z.string().min(1).default('ScormFlow'),
+  CERTIFICATE_VERIFY_BASE_URL: emptyAsUndefined(z.string().url().optional()),
+  CERTIFICATE_ACCENT_COLOR: emptyAsUndefined(
+    z.string().regex(/^#[0-9a-fA-F]{6}$/, 'CERTIFICATE_ACCENT_COLOR must look like #1f4e79').optional(),
+  ),
+
   STORAGE_DRIVER: StorageDriver.default('local'),
   STORAGE_LOCAL_DIR: z.string().default('./.storage'),
   // Namespace for every key the engine writes, so several deployments can share

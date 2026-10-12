@@ -304,8 +304,38 @@ describe.each(EDITIONS)('SCORM lifecycle end to end ($name)', (edition) => {
       'score.updated',
       'attempt.terminated',
       'objective.mastered',
+      'certificate.issued',
     ]);
     expect(events.every((e) => e.data.attemptId === attemptId)).toBe(true);
+
+    // ── Certificate: issued once on completion, readable by the learner ──
+    expect(db.tables.certificates).toHaveLength(1);
+    const cert = await app.inject({
+      method: 'GET',
+      url: `/api/v1/attempts/${attemptId}/certificate`,
+      headers: { authorization: `Bearer ${token2}` },
+    });
+    expect(cert.statusCode).toBe(200);
+    expect(cert.json()).toMatchObject({
+      attemptId,
+      status: 'valid',
+      learnerId: LEARNER.learnerId,
+      learnerName: LEARNER.learnerName,
+      courseTitle: 'Safety Basics',
+      scorePercent: 90,
+    });
+    const pdf = await app.inject({
+      method: 'GET',
+      url: `/api/v1/attempts/${attemptId}/certificate/pdf?token=${token2}`,
+    });
+    expect(pdf.statusCode).toBe(200);
+    expect(pdf.headers['content-type']).toBe('application/pdf');
+    expect(pdf.rawPayload.subarray(0, 5).toString()).toBe('%PDF-');
+    const verified = await app.inject({
+      method: 'GET',
+      url: `/api/v1/certificates/verify/${cert.json().serial.toLowerCase()}`,
+    });
+    expect(verified.json()).toMatchObject({ valid: true, learnerName: LEARNER.learnerName });
 
     // ── Retake: a brand-new attempt that carries the learner's prior time ──
     const retake = await startAttempt(course.id);

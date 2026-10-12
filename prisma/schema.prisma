@@ -25,6 +25,7 @@ model Tenant {
   cmi5Sessions   Cmi5Session[]
   webhookEndpoints  WebhookEndpoint[]
   webhookDeliveries WebhookDelivery[]
+  certificates      Certificate[]
 }
 
 model ApiKey {
@@ -62,9 +63,10 @@ model Course {
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  scos     Sco[]
-  attempts Attempt[]
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  scos         Sco[]
+  attempts     Attempt[]
+  certificates Certificate[]
 
   @@index([tenantId])
 }
@@ -92,8 +94,9 @@ model Learner {
   name       String?
   createdAt  DateTime @default(now())
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  attempts Attempt[]
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  attempts     Attempt[]
+  certificates Certificate[]
 
   @@unique([tenantId, externalId])
   @@index([tenantId])
@@ -171,11 +174,44 @@ model Attempt {
   interactions Interaction[]
   objectives   Objective[]
   commits      CommitLog[]
+  certificate  Certificate?
 
   @@index([tenantId])
   @@index([courseId])
   @@index([learnerId])
   @@index([tenantId, courseId, learnerId])
+}
+
+/// A completion certificate, issued at most once per attempt. Learner name,
+/// course title and score are snapshotted at issue time so the certificate
+/// keeps reading the same even if the learner or course is later renamed; the
+/// PDF is rendered from these columns on demand rather than stored.
+model Certificate {
+  id        String @id @default(cuid())
+  tenantId  String
+  attemptId String @unique
+  courseId  String
+  learnerId String
+
+  /// Public verification code printed on the PDF, e.g. `7KQ2-M9XD-4TPA`.
+  serial       String @unique
+  learnerName  String
+  courseTitle  String
+  scorePercent Float?
+
+  completedAt   DateTime
+  issuedAt      DateTime  @default(now())
+  revokedAt     DateTime?
+  revokedReason String?
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  attempt Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  course  Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  learner Learner @relation(fields: [learnerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, issuedAt])
+  @@index([tenantId, learnerId])
+  @@index([tenantId, courseId])
 }
 
 model Interaction {

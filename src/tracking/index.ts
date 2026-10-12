@@ -18,6 +18,7 @@ export {
 export type {
   ApplyCommitInput,
   ApplyCommitResult,
+  CertificateHook,
   QueuedCommit,
   SyncCommitOutcome,
   SyncCommitsInput,

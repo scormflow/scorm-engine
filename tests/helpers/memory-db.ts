@@ -20,6 +20,7 @@ export interface MemoryDb {
     objectives: Row[];
     interactions: Row[];
     commitLogs: Row[];
+    certificates: Row[];
   };
 }
 
@@ -39,6 +40,7 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
     objectives: [],
     interactions: [],
     commitLogs: [],
+    certificates: [],
   };
 
   // Relations each model can expand through select/include.
@@ -51,6 +53,9 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
       learner: (a) => tables.learners.find((l) => l.id === a.learnerId) ?? null,
       objectives: (a) => sortBy(tables.objectives.filter((o) => o.attemptId === a.id), 'index'),
       interactions: (a) => sortBy(tables.interactions.filter((i) => i.attemptId === a.id), 'index'),
+    },
+    certificate: {
+      learner: (c) => tables.learners.find((l) => l.id === c.learnerId) ?? null,
     },
   };
 
@@ -159,6 +164,7 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
     keep(tables.objectives, (o) => attemptIds.has(o.attemptId));
     keep(tables.interactions, (i) => attemptIds.has(i.attemptId));
     keep(tables.commitLogs, (l) => attemptIds.has(l.attemptId));
+    keep(tables.certificates, (c) => attemptIds.has(c.attemptId));
   }
 
   const now = () => new Date();
@@ -202,6 +208,13 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
     objective: table('objective', tables.objectives, () => ({ id: randomUUID() })),
     interaction: table('interaction', tables.interactions, () => ({ id: randomUUID() })),
     commitLog: table('commitLog', tables.commitLogs, () => ({ id: randomUUID(), createdAt: now() })),
+    certificate: table('certificate', tables.certificates, () => ({
+      id: randomUUID(),
+      scorePercent: null,
+      issuedAt: now(),
+      revokedAt: null,
+      revokedReason: null,
+    })),
   };
   client.$transaction = async (fn: (tx: unknown) => unknown) => fn(client);
 
@@ -215,8 +228,9 @@ function matches(row: Row, where: Row): boolean {
     const value = row[key];
     if (cond !== null && typeof cond === 'object' && !(cond instanceof Date)) {
       if ('in' in cond && !cond.in.includes(value)) return false;
-      if ('not' in cond && value === cond.not) return false;
-      if (!('in' in cond) && !('not' in cond) && !matches(row, cond)) return false;
+      if ('not' in cond && (value ?? null) === cond.not) return false;
+      if ('lt' in cond && !(value < cond.lt)) return false;
+      if (!('in' in cond) && !('not' in cond) && !('lt' in cond) && !matches(row, cond)) return false;
       continue;
     }
     if (value !== cond && !(cond === null && value === undefined)) return false;
