@@ -1573,7 +1573,7 @@ paths:
                 event: course.completed
                 data: {"id":"evt_0b7e0d4e-8a7c-4c43-9a8e-2a0f0a6f4c11","type":"course.completed","createdAt":"2026-10-13T09:00:00.000Z","data":{"attemptId":"att_1"}}
         '400':
-          description: `types` names an unknown event type (`code: invalid_events`).
+          description: 'The `types` query names an unknown event type (`code: invalid_events`).'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
