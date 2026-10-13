@@ -21,7 +21,7 @@ describe('certificates', () => {
     db = createMemoryDb({ tenantId: TENANT, apiKey: API_KEY });
     events = [];
     const webhooks = {
-      emit: (_tenantId: string, type: string, data: Record<string, any>) => events.push({ type, data }),
+      enqueue: async ({ type, data }: { type: string; data: Record<string, any> }) => events.push({ type, data }),
       start: () => undefined,
       stop: async () => undefined,
     } as unknown as WebhookDispatcher;

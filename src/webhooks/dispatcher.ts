@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 
 import type { PrismaClient } from '../db/client.js';
+import type { EngineEvent } from '../events/types.js';
 import {
   ALL_EVENTS,
   type EventSink,
@@ -83,23 +84,62 @@ export class WebhookDispatcher implements EventSink {
     data: Record<string, unknown>,
     target?: { endpointId: string },
   ): Promise<string[]> {
+    const now = this.now();
+    const payload: WebhookPayload = { id: `evt_${randomUUID()}`, type, createdAt: now.toISOString(), data };
+    const ids = await this.queue(tenantId, payload, target);
+    await Promise.all(ids.map((id) => this.deliver(id)));
+    return ids;
+  }
+
+  /**
+   * The event bus's webhook subscriber: queue a bus event for every subscribed
+   * endpoint, keeping the bus's event id so receivers can dedupe across hops.
+   * Idempotent on that id — a transport that redelivers never double-queues.
+   * Resolves once the delivery rows are written; first attempts carry on in
+   * the background.
+   */
+  async enqueue(event: EngineEvent): Promise<string[]> {
+    const payload: WebhookPayload = { id: event.id, type: event.type, createdAt: event.createdAt, data: event.data };
+    const ids = await this.queue(event.tenantId, payload);
+    for (const id of ids) {
+      this.track(
+        this.deliver(id).catch((err: unknown) => {
+          this.options.logger?.error({ err, deliveryId: id }, 'webhook delivery attempt failed');
+        }),
+      );
+    }
+    return ids;
+  }
+
+  /** Write one PENDING delivery per target endpoint that doesn't already have this event. */
+  private async queue(
+    tenantId: string,
+    payload: WebhookPayload,
+    target?: { endpointId: string },
+  ): Promise<string[]> {
     const endpoints = target
       ? await this.prisma.webhookEndpoint.findMany({ where: { tenantId, id: target.endpointId } })
       : (await this.prisma.webhookEndpoint.findMany({ where: { tenantId, enabled: true } })).filter(
-          (e) => e.events.includes(ALL_EVENTS) || e.events.includes(type),
+          (e) => e.events.includes(ALL_EVENTS) || e.events.includes(payload.type),
         );
     if (endpoints.length === 0) return [];
 
+    const existing = await this.prisma.webhookDelivery.findMany({
+      where: { tenantId, eventId: payload.id },
+      select: { endpointId: true },
+    });
+    const queued = new Set(existing.map((d) => d.endpointId));
+
     const now = this.now();
-    const payload: WebhookPayload = { id: `evt_${randomUUID()}`, type, createdAt: now.toISOString(), data };
     const ids: string[] = [];
     for (const endpoint of endpoints) {
+      if (queued.has(endpoint.id)) continue;
       const row = await this.prisma.webhookDelivery.create({
         data: {
           tenantId,
           endpointId: endpoint.id,
           eventId: payload.id,
-          eventType: type,
+          eventType: payload.type,
           payload: payload as unknown as Prisma.InputJsonValue,
           status: 'PENDING',
           nextAttemptAt: now,
@@ -107,7 +147,6 @@ export class WebhookDispatcher implements EventSink {
       });
       ids.push(row.id);
     }
-    await Promise.all(ids.map((id) => this.deliver(id)));
     return ids;
   }
 

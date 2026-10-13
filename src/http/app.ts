@@ -22,6 +22,8 @@ import { webhookRoutes } from './routes/webhooks.js';
 import { certificateRoutes } from './routes/certificates.js';
 import { CertificateIssuer } from '../certificates/index.js';
 import { WebhookDispatcher } from '../webhooks/index.js';
+import { createEventBus, type EventBus } from '../events/index.js';
+import { eventRoutes } from './routes/events.js';
 import { TenantRateLimiter, tenantRateLimit } from './rate-limit.js';
 import { registerHealthRoutes } from './health.js';
 import { ENGINE_VERSION } from '../version.js';
@@ -30,6 +32,8 @@ declare module 'fastify' {
   interface FastifyInstance {
     /** Publishes engine events to the tenant's webhook endpoints. */
     webhooks: WebhookDispatcher;
+    /** Carries every engine event to its subscribers (webhooks, live streams, plugins). */
+    events: EventBus;
   }
 }
 
@@ -39,6 +43,12 @@ export interface AppDeps {
   storage?: StorageAdapter;
   /** Supply a dispatcher (e.g. one with a stubbed `fetch`); one is built from `env` otherwise. */
   webhooks?: WebhookDispatcher;
+  /**
+   * Supply an event bus (e.g. one on your own Redis connection, or with extra
+   * subscribers already attached); one is built from `EVENT_BUS_*` otherwise.
+   * The app closes it on shutdown either way.
+   */
+  eventBus?: EventBus;
   /**
    * Poll for due webhook retries every `WEBHOOK_WORKER_INTERVAL_MS`. The server
    * entrypoint turns this on; embedders and tests opt in.
@@ -83,7 +93,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     });
   app.decorate('webhooks', webhooks);
   if (deps.startWebhookWorker) webhooks.start(env.WEBHOOK_WORKER_INTERVAL_MS);
-  app.addHook('onClose', async () => webhooks.stop());
+
+  // Services publish to the bus; webhooks are one subscriber among any number.
+  const events = deps.eventBus ?? createEventBus(env, app.log);
+  events.subscribe('webhooks', (event) => webhooks.enqueue(event).then(() => undefined));
+  app.decorate('events', events);
+  app.addHook('onReady', async () => events.start());
+  app.addHook('onClose', async () => {
+    await events.close();
+    await webhooks.stop();
+  });
 
   await app.register(apiKeyAuth, { prisma });
   await app.register(attemptAuth);
@@ -101,7 +120,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
           verifyBaseUrl: env.CERTIFICATE_VERIFY_BASE_URL,
           accentColor: env.CERTIFICATE_ACCENT_COLOR,
         },
-        webhooks,
+        events,
         app.log,
       )
     : undefined;
@@ -116,14 +135,17 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await api.register(coursesRoutes({ prisma, storage }), { prefix: '/courses' });
       await api.register(contentRoutes({ prisma, storage }));
       await api.register(
-        attemptsRoutes({ prisma, validationMode: env.SCORM_VALIDATION_MODE, events: webhooks, certificates }),
+        attemptsRoutes({ prisma, validationMode: env.SCORM_VALIDATION_MODE, events, certificates }),
       );
       if (certificates) await api.register(certificateRoutes({ certificates }));
       await api.register(analyticsRoutes({ prisma }), { prefix: '/analytics' });
       await api.register(embedRoutes({ prisma, env }));
-      await api.register(xapiRoutes({ prisma, storage, env, events: webhooks }), { prefix: '/xapi' });
-      await api.register(cmi5Routes({ prisma, storage, env, events: webhooks }), { prefix: '/cmi5' });
+      await api.register(xapiRoutes({ prisma, storage, env, events }), { prefix: '/xapi' });
+      await api.register(cmi5Routes({ prisma, storage, env, events }), { prefix: '/cmi5' });
       await api.register(webhookRoutes({ prisma, env, dispatcher: webhooks }), { prefix: '/webhooks' });
+      await api.register(eventRoutes({ bus: events, heartbeatSeconds: env.EVENT_STREAM_HEARTBEAT_SECONDS }), {
+        prefix: '/events',
+      });
     },
     { prefix: '/api/v1' },
   );

@@ -104,6 +104,16 @@ tags:
       is retried with exponential backoff until `WEBHOOK_MAX_ATTEMPTS`, after
       which the delivery is `FAILED` and can be retried by hand. Deliveries are
       at-least-once — dedupe on the payload `id`.
+  - name: Events
+    description: |
+      A live feed of the tenant's engine events over Server-Sent Events — the
+      same `WebhookPayload` envelope a webhook receives, without having to
+      expose a public endpoint. Built for dashboards and back-office tools;
+      the stream needs an API key, so keep it server-side. Events are not
+      replayed: a client that reconnects resumes from that moment, and
+      webhooks remain the durable channel. Both channels share event ids, so
+      a consumer of both can dedupe. With `EVENT_BUS_DRIVER=redis` every engine
+      instance's stream sees every event, whichever instance raised it.
   - name: Certificates
     description: |
       PDF completion certificates. When `CERTIFICATES_ENABLED` (the default),
@@ -1527,6 +1537,47 @@ paths:
                     type: string
                     description: Subscribes to every event, including ones added later.
                     example: '*'
+
+  /events/stream:
+    get:
+      tags: [Events]
+      summary: Stream engine events live (Server-Sent Events)
+      description: |
+        Holds the connection open and writes one SSE message per event:
+        `id` is the event id, `event` its type and `data` the JSON
+        `WebhookPayload`. Comment lines (`: ping`) keep idle connections
+        alive every `EVENT_STREAM_HEARTBEAT_SECONDS`. A client that stops
+        reading is disconnected once about 1 MB is buffered for it.
+      parameters:
+        - name: types
+          in: query
+          required: false
+          description: Comma-separated event types to receive; every type when omitted (or `*`).
+          schema: { type: string }
+          example: course.completed,certificate.issued
+      responses:
+        '200':
+          description: An open `text/event-stream`.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  SSE messages, for example:
+
+                      id: evt_3f1c…
+                      event: course.completed
+                      data: {"id":"evt_3f1c…","type":"course.completed","createdAt":"…","data":{…}}
+              example: |
+                id: evt_0b7e0d4e-8a7c-4c43-9a8e-2a0f0a6f4c11
+                event: course.completed
+                data: {"id":"evt_0b7e0d4e-8a7c-4c43-9a8e-2a0f0a6f4c11","type":"course.completed","createdAt":"2026-10-13T09:00:00.000Z","data":{"attemptId":"att_1"}}
+        '400':
+          description: `types` names an unknown event type (`code: invalid_events`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /webhooks/{webhookId}:
     parameters:

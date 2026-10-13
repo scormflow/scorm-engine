@@ -112,7 +112,7 @@ describe.each(EDITIONS)('SCORM lifecycle end to end ($name)', (edition) => {
     storage = new MemoryStorage();
     events = [];
     const webhooks = {
-      emit: (_tenantId: string, type: string, data: Record<string, any>) => events.push({ type, data }),
+      enqueue: async ({ type, data }: { type: string; data: Record<string, any> }) => events.push({ type, data }),
       start: () => undefined,
       stop: async () => undefined,
     } as unknown as WebhookDispatcher;

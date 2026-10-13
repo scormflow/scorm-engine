@@ -24,6 +24,11 @@ export function createTestEnv(overrides: Partial<Env> = {}): Env {
     STORAGE_DRIVER: 'local',
     STORAGE_LOCAL_DIR: './.storage',
     S3_FORCE_PATH_STYLE: false,
+    EVENT_BUS_DRIVER: 'memory',
+    EVENT_BUS_STREAM: 'scormflow:events',
+    EVENT_BUS_GROUP: 'scormflow',
+    EVENT_BUS_MAX_LENGTH: 100_000,
+    EVENT_STREAM_HEARTBEAT_SECONDS: 15,
     ...overrides,
   };
 }

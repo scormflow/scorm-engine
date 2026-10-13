@@ -96,10 +96,29 @@ const baseSchema = z.object({
   S3_SESSION_TOKEN: emptyAsUndefined(z.string().optional()),
   S3_FORCE_PATH_STYLE: boolish.default(false),
 
-  REDIS_URL: z.string().url().optional(),
+  REDIS_URL: emptyAsUndefined(z.string().url().optional()),
+
+  // Event bus. `memory` (the default) keeps events inside one process; `redis`
+  // carries them over a Redis stream (Redis 6.2+, REDIS_URL required) so a
+  // cluster of engine instances sends each webhook once and every instance's
+  // live event stream sees every event.
+  EVENT_BUS_DRIVER: z.enum(['memory', 'redis']).default('memory'),
+  EVENT_BUS_STREAM: z.string().min(1).default('scormflow:events'),
+  EVENT_BUS_GROUP: z.string().min(1).default('scormflow'),
+  // Approximate cap on the Redis stream's length (older entries are trimmed).
+  EVENT_BUS_MAX_LENGTH: z.coerce.number().int().min(1000).default(100_000),
+  // Comment line sent on idle `GET /events/stream` connections so proxies keep them open.
+  EVENT_STREAM_HEARTBEAT_SECONDS: z.coerce.number().int().positive().default(15),
 });
 
 const envSchema = baseSchema.superRefine((env, ctx) => {
+  if (env.EVENT_BUS_DRIVER === 'redis' && !env.REDIS_URL) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['REDIS_URL'],
+      message: 'REDIS_URL is required when EVENT_BUS_DRIVER=redis',
+    });
+  }
   if (env.STORAGE_DRIVER === 's3') {
     for (const key of ['S3_REGION', 'S3_BUCKET', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY'] as const) {
       if (!env[key]) {
