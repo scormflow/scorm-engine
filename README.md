@@ -119,6 +119,9 @@ POST   /api/v1/webhooks/deliveries/:id/retry  Re-send a delivery, incl. dead-let
 
 GET    /api/v1/events/stream                  Live engine events over SSE (`?types=` to filter)
 
+GET    /api/v1/plugins                        Installed plugins
+GET    /api/v1/plugins/analytics/activity     Live per-minute event counts (analytics plugin)
+
 GET    /api/v1/certificates                   List certificates (filter by learner / course / status)
 GET    /api/v1/certificates/:id               One certificate
 GET    /api/v1/certificates/:id/pdf           The certificate PDF (`?download=1` to save)
@@ -249,6 +252,38 @@ a `: ping` comment every `EVENT_STREAM_HEARTBEAT_SECONDS`.
 curl -N $ENGINE/api/v1/events/stream -H "X-API-Key: $KEY"
 ```
 
+### Plugins
+
+A plugin bundles event handlers and API routes behind one name, using only the
+context the engine hands it — the bus, database, storage, env and a tagged logger:
+
+```ts
+import { analyticsPlugin, buildApp, definePlugin } from '@scormflow/server';
+
+const slack = definePlugin({
+  name: 'slack',
+  setup(ctx) {
+    // Work: once per event across a cluster (bus name `plugin:slack:notify`).
+    ctx.subscribe('notify', (e) => postToSlack(`${e.data.learnerId} finished`), { types: ['course.completed'] });
+    // Routes: mounted at /api/v1/plugins/slack, API key required, rate limited.
+    ctx.routes((r) => r.get('/status', async (req) => ({ tenant: req.tenantId })));
+    ctx.onClose(() => slackClient.close());
+  },
+});
+
+const app = await buildApp({ env, plugins: [analyticsPlugin(), slack] });
+```
+
+`ctx.listen` observes events on every instance instead. Plugins are set up in
+order while the app is built; a `setup` that throws fails `buildApp`, and names
+must be unique and URL-safe. `GET /api/v1/plugins` lists what is installed.
+
+The built-in `analyticsPlugin({ retentionMinutes })` (default 60) counts each
+tenant's events per minute; `GET /api/v1/plugins/analytics/activity?minutes=15`
+returns totals by type plus a minute-by-minute timeline. Counts are in memory
+(every instance counts every event on a Redis bus) and restart from zero with
+the process. Docker users without code turn built-ins on with `PLUGINS=analytics`.
+
 ### Certificates
 
 The first time an attempt is completed and not failed (SCORM 1.2 `passed` /
@@ -283,6 +318,7 @@ src/
 ├── events/       Event bus: memory + Redis Streams transports  [done]
 ├── webhooks/     Endpoints, signing, delivery + retry worker   [done]
 ├── certificates/ Completion certificates + PDF writer          [done]
+├── plugins/      Plugin host + built-in analytics plugin       [done]
 ├── storage/      Storage adapters: local disk, S3 / R2 / MinIO [done]
 ├── analytics/    Analytics + reporting                         [done]
 ├── http/         Fastify routes + runtime bridge               [done]
@@ -326,6 +362,7 @@ Database: PostgreSQL (production) or SQLite (dev). ORM: Prisma. Schema in [`pris
 | `EVENT_BUS_STREAM`, `EVENT_BUS_GROUP` | Redis stream key and consumer group (default `scormflow:events` / `scormflow`) |
 | `EVENT_BUS_MAX_LENGTH` | Approximate cap on the Redis stream (default 100000) |
 | `EVENT_STREAM_HEARTBEAT_SECONDS` | Keep-alive interval on `/events/stream` (default 15) |
+| `PLUGINS` | Built-in plugins to install, comma-separated (`analytics`); ignored when `buildApp` gets a `plugins` list |
 | `CERTIFICATES_ENABLED` | Issue PDF certificates on completion (default true) |
 | `CERTIFICATE_ISSUER` | Organization printed as the issuer (default `ScormFlow`) |
 | `CERTIFICATE_VERIFY_BASE_URL` | Public verification page; `<base>/<serial>` is printed on each certificate |
@@ -382,7 +419,8 @@ Checkboxes reflect the actual state of `main`.
 - [x] Certificate engine (PDF generation on completion, public verification, revocation)
 - [x] Event bus (in-process or Redis Streams; consumer-group work delivery, retries, dead-letter stream)
 - [x] Live event stream (`GET /events/stream`, Server-Sent Events)
-- [ ] Plugin system (`plugins: [analyticsPlugin(), certificatePlugin()]`)
+- [x] Plugin system (`plugins: [analyticsPlugin(), …]`, routes under `/plugins/:name`, `PLUGINS` env for built-ins)
+- [ ] `certificatePlugin()` — certificates are still built in, toggled by `CERTIFICATES_ENABLED`
 
 ### Phase 3 — Category-defining
 - [ ] AI analytics layer with BYO provider + key (OpenAI / Anthropic / Gemini / Mistral / Ollama)
