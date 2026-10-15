@@ -70,6 +70,26 @@ const baseSchema = z.object({
     z.string().regex(/^#[0-9a-fA-F]{6}$/, 'CERTIFICATE_ACCENT_COLOR must look like #1f4e79').optional(),
   ),
 
+  // AI analytics (bring your own provider and key). Tenants' provider keys are
+  // stored encrypted under AI_MASTER_KEY — 32 bytes as 64 hex characters or
+  // base64 (`openssl rand -hex 32`). Leave it empty to turn the /ai routes off.
+  // Losing or changing it makes stored keys unreadable.
+  AI_MASTER_KEY: emptyAsUndefined(
+    z
+      .string()
+      .refine(
+        (v) => /^[0-9a-fA-F]{64}$/.test(v.trim()) || Buffer.from(v.trim(), 'base64').length === 32,
+        'AI_MASTER_KEY must be 32 bytes, as 64 hex characters or base64',
+      )
+      .optional(),
+  ),
+  // Allow provider base URLs on localhost / private addresses (a local Ollama,
+  // an in-cluster vLLM). Off by default so a tenant cannot aim the engine at
+  // internal services.
+  AI_ALLOW_PRIVATE_URLS: boolish.default(false),
+  AI_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  AI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(64).max(8192).default(1024),
+
   STORAGE_DRIVER: StorageDriver.default('local'),
   STORAGE_LOCAL_DIR: z.string().default('./.storage'),
   // Namespace for every key the engine writes, so several deployments can share

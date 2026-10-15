@@ -27,6 +27,8 @@ export const WEBHOOK_EVENT_TYPES = [
   'cmi5.course.satisfied',
   // LRS
   'xapi.statement.stored',
+  // AI analytics: a config's monthly token usage reached its alert threshold or cap.
+  'ai.budget.alert',
   // Sent only by the "send test event" endpoint.
   'webhook.test',
 ] as const;
