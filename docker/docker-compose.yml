@@ -49,6 +49,8 @@ services:
       # Set (e.g. `openssl rand -hex 32`) to turn on AI analytics with tenants' own keys.
       AI_MASTER_KEY: ${AI_MASTER_KEY:-}
       AI_ALLOW_PRIVATE_URLS: ${AI_ALLOW_PRIVATE_URLS:-false}
+      # Accept players' session-replay capture events.
+      REPLAY_CAPTURE_ENABLED: ${REPLAY_CAPTURE_ENABLED:-true}
     ports:
       - "3000:3000"
     volumes:

@@ -12,6 +12,7 @@ export {
   AttemptServiceError,
   getRuntimeState,
   recordCommit,
+  SPEC_VERSION,
   startOrResumeAttempt,
   syncCommits,
 } from './attempts.js';

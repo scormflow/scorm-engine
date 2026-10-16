@@ -130,6 +130,17 @@ tags:
       title and score are snapshotted at issue time; the PDF is rendered on
       demand. Each certificate carries a public serial (`XXXX-XXXX-XXXX`) that
       anyone can check at `GET /certificates/verify/{serial}`.
+  - name: Replay
+    description: |
+      Session replay. An attempt's timeline is rebuilt on read from its commit
+      log (location, status, score, interaction, objective and suspend /
+      resume changes the content reported) plus any opt-in capture events the
+      player sent (`page.hidden`, `idle.start`, `navigation`, `pointer`,
+      `media.play`, or a content-defined name such as `quiz.skipped`). Each
+      timeline carries per-location visits and a 0–100 engagement score; the
+      course heatmap folds recent attempts into per-location dwell time,
+      interactions, drop-offs and pointer cells. `REPLAY_CAPTURE_ENABLED=false`
+      refuses capture events; commit-based timelines keep working.
   - name: AI
     description: |
       AI analytics with your own provider and key (OpenAI, Anthropic, Gemini,
@@ -1983,6 +1994,82 @@ paths:
         '200': { $ref: '#/components/responses/CertificatePdf' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /attempts/{attemptId}/replay/events:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    post:
+      tags: [Replay]
+      summary: Send capture events for session replay
+      description: |
+        Batches of opt-in client events, authenticated like a commit. Events
+        with an `id` already stored for the attempt are skipped, so a retried
+        batch is safe. The whole batch is rejected if any event is malformed.
+        At most `REPLAY_MAX_EVENTS_PER_ATTEMPT` are stored per attempt; the rest
+        are reported as `dropped`.
+      security:
+        - ApiKeyAuth: []
+        - AttemptJWT: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplayEventBatch' }
+      responses:
+        '200':
+          description: Stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReplayEventsResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403':
+          description: |
+            The token is for another attempt, or capture is turned off on this
+            engine — `replay_capture_disabled`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /attempts/{attemptId}/replay:
+    parameters:
+      - $ref: '#/components/parameters/AttemptId'
+    get:
+      tags: [Replay]
+      summary: The attempt's replay timeline and engagement score
+      description: |
+        Rebuilt from up to 1000 commits and 10 000 capture events; `truncated`
+        says when the attempt had more.
+      responses:
+        '200':
+          description: Timeline
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttemptReplay' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /courses/{courseId}/heatmap:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+      - name: limit
+        in: query
+        description: Most recent attempts to include (default 50, at most 200).
+        schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      - name: since
+        in: query
+        description: Only attempts started at or after this time.
+        schema: { type: string, format: date-time }
+    get:
+      tags: [Replay]
+      summary: Per-location heatmap across a course's recent attempts
+      responses:
+        '200':
+          description: Heatmap
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CourseHeatmap' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /ai/providers:
     get:
       tags: [AI]
@@ -3067,6 +3154,230 @@ components:
         completedAt: { type: string, format: date-time }
         issuedAt: { type: string, format: date-time }
         revokedAt: { type: [string, 'null'], format: date-time }
+
+    # ── Replay ───────────────────────────────────────────────────────────
+    ReplayEvent:
+      type: object
+      required: [type, at]
+      properties:
+        id:
+          type: string
+          pattern: '^[A-Za-z0-9._:-]{1,64}$'
+          description: Client-generated id; an event whose id is already stored is skipped.
+        type:
+          type: string
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9_-]*(\.[a-z0-9_-]+)*$'
+          description: |
+            `page.hidden`, `page.visible`, `idle.start`, `idle.end`,
+            `navigation`, `pointer`, `media.play`, `media.pause`, `media.ended`,
+            or a content-defined name such as `quiz.skipped`.
+          example: page.hidden
+        at:
+          type: string
+          format: date-time
+          description: When it happened; within 5 minutes of the attempt's lifetime.
+        location:
+          type: [string, 'null']
+          maxLength: 255
+          description: Slide / page the learner was on. A `navigation` event moves the learner here.
+        data:
+          type: object
+          additionalProperties: true
+          description: |
+            At most 2048 bytes as JSON. `pointer` events need `x` and `y`
+            between 0 and 1 (relative to the content frame).
+
+    ReplayEventBatch:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/ReplayEvent' }
+
+    ReplayEventsResult:
+      type: object
+      required: [accepted, duplicates, dropped]
+      properties:
+        accepted: { type: integer }
+        duplicates:
+          type: integer
+          description: Events skipped because their id was already stored (or repeated in the batch).
+        dropped:
+          type: integer
+          description: Events over the per-attempt cap, not stored.
+
+    ReplayTimelineEntry:
+      type: object
+      required: [at, offsetSeconds, type, source, location, data]
+      properties:
+        at: { type: string, format: date-time }
+        offsetSeconds:
+          type: number
+          description: Seconds since the attempt started.
+        type:
+          type: string
+          description: |
+            Engine: `attempt.started`, `attempt.finished`. Content (from
+            commits): `location.changed`, `status.changed`, `score.changed`,
+            `progress.changed`, `interaction.recorded`, `objective.updated`,
+            `session.suspended`, `session.resumed`. Client: the capture event's type.
+        source: { type: string, enum: [engine, content, client] }
+        location:
+          type: [string, 'null']
+          description: Where the learner was. A `location.changed` entry carries the location being left.
+        data:
+          type: object
+          additionalProperties: true
+
+    ReplayLocationVisit:
+      type: object
+      required: [location, enteredAt, leftAt, activeSeconds]
+      properties:
+        location: { type: string }
+        enteredAt: { type: string, format: date-time }
+        leftAt: { type: string, format: date-time }
+        activeSeconds:
+          type: number
+          description: Not counting suspended, hidden, idle or 30-minute-silent stretches.
+
+    EngagementScore:
+      type: object
+      required:
+        - score
+        - level
+        - components
+        - activeSeconds
+        - hiddenSeconds
+        - idleSeconds
+        - focusLosses
+        - interactions
+        - locationsVisited
+      properties:
+        score: { type: integer, minimum: 0, maximum: 100 }
+        level: { type: string, enum: [high, medium, low] }
+        components:
+          type: object
+          description: |
+            Each 0–1, weighted progress 0.4, focus 0.3, interactivity 0.3. A null
+            component (focus without capture; interactivity with no interaction
+            or pointer event) is left out and the rest reweighted.
+          required: [progress, focus, interactivity]
+          properties:
+            progress: { type: number }
+            focus: { type: [number, 'null'] }
+            interactivity: { type: [number, 'null'] }
+        activeSeconds: { type: number }
+        hiddenSeconds: { type: number }
+        idleSeconds: { type: number }
+        focusLosses: { type: integer }
+        interactions: { type: integer }
+        locationsVisited: { type: integer }
+
+    AttemptReplay:
+      type: object
+      required:
+        - attemptId
+        - courseId
+        - learner
+        - status
+        - completionStatus
+        - successStatus
+        - startedAt
+        - endedAt
+        - durationSeconds
+        - commits
+        - captured
+        - truncated
+        - entries
+        - visits
+        - engagement
+      properties:
+        attemptId: { type: string }
+        courseId: { type: string }
+        learner:
+          type: object
+          required: [id, name]
+          properties:
+            id: { type: string, description: "The learner's id in your system." }
+            name: { type: [string, 'null'] }
+        status: { type: string }
+        completionStatus: { type: string }
+        successStatus: { type: string }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        durationSeconds: { type: number }
+        commits: { type: integer }
+        captured:
+          type: boolean
+          description: Whether the player sent any capture events.
+        truncated: { type: boolean }
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/ReplayTimelineEntry' }
+        visits:
+          type: array
+          items: { $ref: '#/components/schemas/ReplayLocationVisit' }
+        engagement: { $ref: '#/components/schemas/EngagementScore' }
+
+    HeatmapLocation:
+      type: object
+      required:
+        - location
+        - visits
+        - attempts
+        - totalActiveSeconds
+        - avgActiveSeconds
+        - interactions
+        - dropOffs
+        - pointer
+      properties:
+        location: { type: string }
+        visits:
+          type: integer
+          description: Visits across all attempts; going back counts again.
+        attempts:
+          type: integer
+          description: Attempts that reached the location.
+        totalActiveSeconds: { type: number }
+        avgActiveSeconds:
+          type: number
+          description: Per visit.
+        interactions: { type: integer }
+        dropOffs:
+          type: integer
+          description: Unfinished attempts whose last location was this one.
+        pointer:
+          type: array
+          description: Non-empty cells of the `grid` × `grid` pointer grid.
+          items:
+            type: object
+            required: [x, y, count]
+            properties:
+              x: { type: integer }
+              y: { type: integer }
+              count: { type: integer }
+
+    CourseHeatmap:
+      type: object
+      required: [courseId, attempts, completed, grid, truncated, locations]
+      properties:
+        courseId: { type: string }
+        attempts: { type: integer }
+        completed:
+          type: integer
+          description: Attempts that completed, passed or failed.
+        grid: { type: integer, example: 10 }
+        truncated:
+          type: boolean
+          description: More attempts matched than `limit`; the most recent were used.
+        locations:
+          type: array
+          description: In course order (the average position attempts first reached each one).
+          items: { $ref: '#/components/schemas/HeatmapLocation' }
 
     # ── Webhooks ─────────────────────────────────────────────────────────
     WebhookEventType:

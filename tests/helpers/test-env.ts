@@ -24,6 +24,8 @@ export function createTestEnv(overrides: Partial<Env> = {}): Env {
     AI_ALLOW_PRIVATE_URLS: false,
     AI_TIMEOUT_MS: 1000,
     AI_MAX_OUTPUT_TOKENS: 1024,
+    REPLAY_CAPTURE_ENABLED: true,
+    REPLAY_MAX_EVENTS_PER_ATTEMPT: 5000,
     STORAGE_DRIVER: 'local',
     STORAGE_LOCAL_DIR: './.storage',
     S3_FORCE_PATH_STYLE: false,

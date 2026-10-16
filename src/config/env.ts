@@ -90,6 +90,13 @@ const baseSchema = z.object({
   AI_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   AI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(64).max(8192).default(1024),
 
+  // Session replay. Timelines are rebuilt from the commit log and always
+  // available; capture events are the player's opt-in extras (tab hidden, idle,
+  // navigation, pointer). Turn capture off to refuse them; at most
+  // REPLAY_MAX_EVENTS_PER_ATTEMPT are stored per attempt.
+  REPLAY_CAPTURE_ENABLED: boolish.default(true),
+  REPLAY_MAX_EVENTS_PER_ATTEMPT: z.coerce.number().int().min(0).max(100_000).default(5000),
+
   STORAGE_DRIVER: StorageDriver.default('local'),
   STORAGE_LOCAL_DIR: z.string().default('./.storage'),
   // Namespace for every key the engine writes, so several deployments can share

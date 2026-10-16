@@ -28,6 +28,7 @@ model Tenant {
   certificates      Certificate[]
   aiConfigs         AiProviderConfig[]
   aiCalls           AiCallLog[]
+  replayEvents      ReplayEvent[]
 }
 
 model ApiKey {
@@ -176,6 +177,7 @@ model Attempt {
   interactions Interaction[]
   objectives   Objective[]
   commits      CommitLog[]
+  replayEvents ReplayEvent[]
   certificate  Certificate?
 
   @@index([tenantId])
@@ -270,6 +272,31 @@ model CommitLog {
 
   @@index([attemptId])
   @@index([createdAt])
+}
+
+/// An opt-in client-side event captured by the player for session replay
+/// (tab hidden, idle, page navigation, media play, pointer position, or a
+/// content-defined event). Commits already give the replay timeline its CMI
+/// changes; these fill in what the learner did between commits.
+model ReplayEvent {
+  id        String   @id @default(cuid())
+  tenantId  String
+  attemptId String
+  /// Client-generated id, so a retried batch is stored once.
+  clientId  String?
+  type      String
+  /// Course location (slide / page) the learner was on, if known.
+  location  String?
+  data      Json     @default("{}")
+  at        DateTime
+  createdAt DateTime @default(now())
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  attempt Attempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, clientId])
+  @@index([attemptId, at])
+  @@index([tenantId])
 }
 
 /// A stored xAPI 1.0.3 statement. The authoritative document lives in `statement`

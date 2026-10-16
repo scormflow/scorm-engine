@@ -23,6 +23,8 @@ import { certificateRoutes } from './routes/certificates.js';
 import { CertificateIssuer } from '../certificates/index.js';
 import { AiService, KeyVault, parseMasterKey } from '../ai/index.js';
 import { aiRoutes } from './routes/ai.js';
+import { ReplayService } from '../replay/index.js';
+import { replayRoutes } from './routes/replay.js';
 import { WebhookDispatcher } from '../webhooks/index.js';
 import { createEventBus, type EventBus } from '../events/index.js';
 import { eventRoutes } from './routes/events.js';
@@ -164,6 +166,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         attemptsRoutes({ prisma, validationMode: env.SCORM_VALIDATION_MODE, events, certificates }),
       );
       if (certificates) await api.register(certificateRoutes({ certificates }));
+      await api.register(
+        replayRoutes({
+          replay: new ReplayService(prisma, {
+            captureEnabled: env.REPLAY_CAPTURE_ENABLED,
+            maxEventsPerAttempt: env.REPLAY_MAX_EVENTS_PER_ATTEMPT,
+          }),
+        }),
+      );
       await api.register(analyticsRoutes({ prisma }), { prefix: '/analytics' });
       if (ai) await api.register(aiRoutes({ ai }), { prefix: '/ai' });
       await api.register(embedRoutes({ prisma, env }));

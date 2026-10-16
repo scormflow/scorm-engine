@@ -23,6 +23,7 @@ export interface MemoryDb {
     certificates: Row[];
     aiConfigs: Row[];
     aiCalls: Row[];
+    replayEvents: Row[];
   };
 }
 
@@ -45,6 +46,7 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
     certificates: [],
     aiConfigs: [],
     aiCalls: [],
+    replayEvents: [],
   };
 
   // Relations each model can expand through select/include.
@@ -184,6 +186,7 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
     keep(tables.interactions, (i) => attemptIds.has(i.attemptId));
     keep(tables.commitLogs, (l) => attemptIds.has(l.attemptId));
     keep(tables.certificates, (c) => attemptIds.has(c.attemptId));
+    keep(tables.replayEvents, (e) => attemptIds.has(e.attemptId));
   }
 
   const now = () => new Date();
@@ -240,6 +243,13 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
       updatedAt: now(),
     })),
     aiCallLog: table('aiCallLog', tables.aiCalls, () => ({ id: randomUUID(), createdAt: now() })),
+    replayEvent: table('replayEvent', tables.replayEvents, () => ({
+      id: randomUUID(),
+      clientId: null,
+      location: null,
+      data: {},
+      createdAt: now(),
+    })),
   };
   client.$transaction = async (fn: (tx: unknown) => unknown) => fn(client);
 
