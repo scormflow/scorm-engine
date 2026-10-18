@@ -528,7 +528,15 @@ paths:
     post:
       tags: [Courses]
       summary: Validate a SCORM package without registering it
-      description: Useful for CI / authoring pipelines. No course is persisted.
+      description: |
+        Useful for CI / authoring pipelines. No course is persisted. Runs the
+        full package validator — archive structure, manifest well-formedness and
+        identifier integrity, launch and resource files, runtime API / CMI data
+        model compatibility, basic accessibility, and asset size / format.
+
+        `valid` is false only when there are `error`-severity issues; warnings
+        and info never block an upload. The same checks run offline with
+        `npx @scormflow/server validate course.zip`.
       requestBody:
         required: true
         content:
@@ -2516,29 +2524,74 @@ components:
           items: { $ref: '#/components/schemas/Course' }
         pagination: { $ref: '#/components/schemas/Pagination' }
 
+    ValidationIssue:
+      type: object
+      required: [code, severity, category, message, path]
+      properties:
+        code:
+          type: string
+          description: |
+            Stable machine-readable code. Errors: `malformed_zip`, `missing_manifest`,
+            `manifest_not_at_root`, `malformed_manifest`, `no_scos`, `unknown_version`,
+            `unsafe_path`, `duplicate_identifier`, `broken_identifierref`,
+            `missing_launch_file`, `too_large`. Warnings: `missing_resource_file`,
+            `path_case_mismatch`, `broken_dependency`, `sco_without_href`,
+            `default_organization_missing`, `mastery_score_out_of_range`,
+            `runtime_api_mismatch`, `cmi_element_version_mismatch`, `a11y_missing_lang`,
+            `a11y_img_missing_alt`, `deprecated_plugin_content`, `large_asset`,
+            `large_package`. Info: `junk_file`, `missing_title`, `external_launch_url`,
+            `no_runtime_api_reference`, `a11y_missing_title`, `unoptimized_image`,
+            `uncompressed_image_format`.
+          example: missing_launch_file
+        severity:
+          type: string
+          enum: [error, warning, info]
+        category:
+          type: string
+          enum: [structure, manifest, resources, runtime, accessibility, assets]
+        message: { type: string }
+        path:
+          type: [string, 'null']
+          description: Package-relative file the issue is about, when there is one.
+
     ValidationReport:
       type: object
+      required: [valid, version, errors, warnings, info, stats, manifest]
       properties:
-        valid: { type: boolean }
+        valid:
+          type: boolean
+          description: True when there are no `error`-severity issues.
         version:
           allOf:
             - $ref: '#/components/schemas/ScormVersion'
           nullable: true
         errors:
           type: array
-          items:
-            type: object
-            properties:
-              code: { type: string }
-              message: { type: string }
-              path: { type: string, nullable: true }
+          items: { $ref: '#/components/schemas/ValidationIssue' }
         warnings:
           type: array
-          items:
-            type: object
-            properties:
-              code: { type: string }
-              message: { type: string }
+          items: { $ref: '#/components/schemas/ValidationIssue' }
+        info:
+          type: array
+          items: { $ref: '#/components/schemas/ValidationIssue' }
+        stats:
+          type: object
+          required: [fileCount, totalBytes, launchableCount, scannedFiles]
+          properties:
+            fileCount: { type: integer }
+            totalBytes: { type: integer }
+            launchableCount:
+              type: integer
+              description: SCOs found in the default organization.
+            scannedFiles:
+              type: integer
+              description: HTML / JS files whose contents were scanned (each ≤ 2 MiB).
+        manifest:
+          description: The parsed manifest, or null when it could not be parsed.
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: 'null'
 
     # ── Attempt ──────────────────────────────────────────────────────────
     Attempt:
