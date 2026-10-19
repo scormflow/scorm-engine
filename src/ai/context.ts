@@ -1,18 +1,53 @@
 import type { PrismaClient } from '../db/client.js';
+import type { CourseHeatmap } from '../replay/heatmap.js';
 
 /**
  * The learning data an AI insight is grounded in.
  *
  * Built from the most recent attempts (course-scoped or tenant-wide) and
  * reduced to aggregates: outcome rates, where unfinished attempts stopped,
- * the objectives learners fail and the questions they get wrong. No learner
- * id, name or attempt id is ever included — the model sees cohorts, not
- * people.
+ * the objectives learners fail and the questions they get wrong. For a single
+ * course it also carries the learner journey from session replay — how many
+ * attempts reached each location in course order and where reach falls off.
+ * No learner id, name or attempt id is ever included — the model sees
+ * cohorts, not people.
  */
 
 export const CONTEXT_ATTEMPT_LIMIT = 500;
+/** Attempts whose replay timelines feed the journey (each one is rebuilt from its commit log). */
+export const JOURNEY_ATTEMPT_LIMIT = 100;
 const TOP_N = 15;
 const MAX_TEXT = 160;
+const MAX_JOURNEY_LOCATIONS = 40;
+const STEEPEST_DROPS = 3;
+
+/** Course heatmap source — the replay service in the app, a stub in tests. */
+export type HeatmapLoader = (tenantId: string, courseId: string, limit: number) => Promise<CourseHeatmap>;
+
+export interface JourneyStep {
+  location: string;
+  /** Attempts that reached the location. */
+  reached: number;
+  /** `reached` over the journey's attempts. */
+  reachRate: number;
+  /** Unfinished attempts that stopped here. */
+  dropOffs: number;
+  /** `dropOffs` over `reached`. */
+  dropOffRate: number;
+  avgActiveSeconds: number;
+  interactions: number;
+}
+
+export interface InsightJourney {
+  attempts: number;
+  completed: number;
+  /** Locations in course order (the order attempts first reach them). */
+  locations: JourneyStep[];
+  /** True when the course has more locations than are listed. */
+  truncated: boolean;
+  /** Largest falls in reach between consecutive locations, biggest first. */
+  steepestDrops: Array<{ after: string; next: string; reachBefore: number; reachAfter: number; drop: number }>;
+}
 
 export interface InsightContext {
   scope: 'course' | 'tenant';
@@ -46,6 +81,13 @@ export interface InsightContext {
   }>;
   /** Tenant scope only: per-course outcomes, lowest completion first. */
   courses?: Array<{ id: string; title: string; attempts: number; completionRate: number; passRate: number | null }>;
+  /** Course scope only, when a heatmap source is available and attempts visited locations. */
+  journey?: InsightJourney;
+}
+
+export interface InsightContextOptions {
+  /** Adds the session-replay journey to course-scoped contexts. */
+  heatmap?: HeatmapLoader;
 }
 
 interface AttemptRow {
@@ -78,6 +120,7 @@ export async function buildInsightContext(
   prisma: PrismaClient,
   tenantId: string,
   courseId?: string,
+  options: InsightContextOptions = {},
 ): Promise<InsightContext> {
   let course: InsightContext['course'];
   if (courseId) {
@@ -129,7 +172,49 @@ export async function buildInsightContext(
   };
 
   if (!courseId) context.courses = await courseStats(prisma, tenantId, sample);
+  else if (options.heatmap && sample.length > 0) {
+    const journey = buildJourney(await options.heatmap(tenantId, courseId, JOURNEY_ATTEMPT_LIMIT));
+    if (journey) context.journey = journey;
+  }
   return context;
+}
+
+/** Reduce a course heatmap to the reach funnel the model reasons over; null when nothing was visited. */
+export function buildJourney(heatmap: CourseHeatmap): InsightJourney | null {
+  if (heatmap.attempts === 0 || heatmap.locations.length === 0) return null;
+  const locations = heatmap.locations.slice(0, MAX_JOURNEY_LOCATIONS).map(
+    (l): JourneyStep => ({
+      location: clip(l.location)!,
+      reached: l.attempts,
+      reachRate: ratio(l.attempts, heatmap.attempts),
+      dropOffs: l.dropOffs,
+      dropOffRate: ratio(l.dropOffs, l.attempts),
+      avgActiveSeconds: l.avgActiveSeconds,
+      interactions: l.interactions,
+    }),
+  );
+  const steepestDrops = locations
+    .slice(1)
+    .map((next, i) => {
+      const before = locations[i]!;
+      return {
+        after: before.location,
+        next: next.location,
+        reachBefore: before.reachRate,
+        reachAfter: next.reachRate,
+        drop: round(before.reachRate - next.reachRate),
+      };
+    })
+    .filter((d) => d.drop > 0)
+    .sort((a, b) => b.drop - a.drop)
+    .slice(0, STEEPEST_DROPS);
+  return {
+    attempts: heatmap.attempts,
+    completed: heatmap.completed,
+    locations,
+    truncated: heatmap.locations.length > locations.length,
+    steepestDrops,
+  };
 }
 
 function isCompleted(a: AttemptRow): boolean {

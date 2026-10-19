@@ -355,7 +355,10 @@ curl -X POST $ENGINE/api/v1/ai/insights -H "X-API-Key: $KEY" \
 - **Grounded in aggregates, not people.** The model sees outcome rates, where
   unfinished attempts stopped (`lesson_location`), the most-failed objectives
   and most-missed questions (with common wrong answers) over the latest 500
-  attempts — never learner ids, names or attempt ids.
+  attempts — never learner ids, names or attempt ids. Course insights also get
+  the session-replay **journey** of the latest 100 attempts: share of attempts
+  reaching each location in course order, dwell, interactions, drop-offs, and
+  the steepest falls in reach (*"reach falls 50% after slide-08"*).
 - **PII redaction.** Emails, card numbers, SSNs, IPs and phone numbers in the
   prompt (course text, typed answers, your question) become `[EMAIL]` etc.
   before it leaves. Turn it off per config (`redactPii: false`) for local models.

@@ -253,6 +253,49 @@ describe('AI analytics routes', () => {
     expect(db.tables.aiCalls[0]!.promptHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it('grounds course insights in the replay journey: reach per location and the steepest drop', async () => {
+    await start();
+    seedCourse();
+    // Finished attempts walk all ten slides; unfinished ones stop at slide 8.
+    for (let i = 0; i < 4; i++) {
+      const last = i < 2 ? 10 : 8;
+      for (let s = 1; s <= last; s++) {
+        const at = new Date(Date.UTC(2026, 9, 10 + i, 9, s));
+        db.tables.commitLogs.push({
+          id: `log_${i}_${s}`,
+          attemptId: `att_${i}`,
+          values: { 'cmi.location': `slide-${String(s).padStart(2, '0')}` },
+          recordedAt: at,
+          createdAt: at,
+        });
+      }
+    }
+    await put('default', { provider: 'anthropic', model: 'claude-test', apiKey: PROVIDER_KEY });
+
+    const res = await insight({ kind: 'insights', courseId: 'course_1' });
+    expect(res.statusCode).toBe(200);
+    const prompt: string = calls[0]!.body.messages[0].content;
+    const data = JSON.parse(/```json\n([\s\S]*)\n```/.exec(prompt)![1]!);
+    expect(data.journey).toMatchObject({ attempts: 4, completed: 2, truncated: false });
+    expect(data.journey.locations).toHaveLength(10);
+    expect(data.journey.locations[0]).toMatchObject({ location: 'slide-01', reached: 4, reachRate: 1 });
+    expect(data.journey.locations[7]).toMatchObject({ location: 'slide-08', reached: 4, dropOffs: 2, dropOffRate: 0.5 });
+    expect(data.journey.locations[8]).toMatchObject({ location: 'slide-09', reached: 2, reachRate: 0.5 });
+    expect(data.journey.steepestDrops).toEqual([
+      { after: 'slide-08', next: 'slide-09', reachBefore: 1, reachAfter: 0.5, drop: 0.5 },
+    ]);
+    // Still cohorts, not people.
+    for (const leak of ['emp-4471', 'Ada Lovelace', 'att_0']) expect(prompt).not.toContain(leak);
+  });
+
+  it('leaves the journey out of tenant-wide insights', async () => {
+    await start();
+    seedCourse();
+    await put('default', { provider: 'anthropic', model: 'claude-test', apiKey: PROVIDER_KEY });
+    await insight({ kind: 'insights' });
+    expect(calls[0]!.body.messages[0].content).not.toContain('"journey"');
+  });
+
   it('sends the prompt unredacted when the tenant turns redaction off', async () => {
     await start();
     seedCourse();
