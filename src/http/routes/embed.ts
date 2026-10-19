@@ -3,8 +3,14 @@ import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { PrismaClient } from '../../db/client.js';
 import type { Env } from '../../config/env.js';
 import { getRuntimeState, type RuntimeState } from '../../tracking/index.js';
-import { ATTEMPT_COOKIE } from '../../auth/attempt-token.js';
-import { renderPlayerPage, renderRuntimeBridge } from '../runtime-bridge.js';
+import { ATTEMPT_COOKIE, type AttemptTokenPayload } from '../../auth/attempt-token.js';
+import {
+  renderBridgeConfig,
+  renderPlayerPage,
+  renderRuntimeBridge,
+  type BridgeConfig,
+  type BridgeReplayConfig,
+} from '../runtime-bridge.js';
 
 export interface EmbedRouteDeps {
   prisma: PrismaClient;
@@ -18,7 +24,29 @@ interface TokenBody {
 
 type ContentSource = 'engine' | 'external';
 
-interface PlayQuery {
+interface ReplayQuery {
+  /** `1` / `true` turns on session-replay capture for this launch. */
+  replay?: string;
+  /** `1` / `true` also records pointer positions (needs `replay`). */
+  pointer?: string;
+}
+
+interface RuntimeQuery extends ReplayQuery {
+  attemptId?: string;
+  token?: string;
+}
+
+type Access =
+  | { token: string; attemptId: string; payload: AttemptTokenPayload; state: RuntimeState }
+  | { status: 400 | 401 | 403 | 404; error: { code: string; message: string } };
+
+function denied(status: 400 | 401 | 403 | 404, code: string, message: string): Access {
+  return { status, error: { code, message } };
+}
+
+const isTrue = (v: string | undefined) => v === '1' || v === 'true';
+
+interface PlayQuery extends ReplayQuery {
   token?: string;
   theme?: 'light' | 'dark' | 'auto';
   scoId?: string;
@@ -59,35 +87,41 @@ export function embedRoutes(deps: EmbedRouteDeps): FastifyPluginAsync {
       },
     );
 
-    // Standalone runtime bridge (no auth; harmless static script).
-    app.get('/runtime.js', async (_req, reply) => {
-      reply.header('Cache-Control', RUNTIME_CACHE);
+    // Standalone runtime bridge. Without attemptId + token it is a static,
+    // cacheable script configured by the host page's window.__SCORMFLOW__;
+    // with them it is prefixed with that config, hydrated from the attempt, so a
+    // single <script> tag is enough.
+    app.get<{ Querystring: RuntimeQuery }>('/runtime.js', async (req, reply) => {
+      const { attemptId, token } = req.query;
+      if (attemptId === undefined && token === undefined) {
+        reply.header('Cache-Control', RUNTIME_CACHE);
+        reply.type('text/javascript; charset=utf-8');
+        return renderRuntimeBridge();
+      }
+      const access = await authorize(token, attemptId);
+      if ('error' in access) return reply.code(access.status).send(access.error);
+
+      // Carries the token and live CMI state — never cache it.
+      reply.header('Cache-Control', 'no-store');
       reply.type('text/javascript; charset=utf-8');
-      return renderRuntimeBridge();
+      const config: BridgeConfig = {
+        apiBase: baseUrl(req),
+        attemptId: access.attemptId,
+        token: access.token,
+        version: access.state.version,
+        cmi: withLaunchContext(access.state),
+        ...replayConfig(req.query),
+      };
+      return `${renderBridgeConfig(config)}\n${renderRuntimeBridge()}`;
     });
 
     // Self-contained player page. Token via query; content engine-hosted or external.
     app.get<{ Params: { attemptId: string }; Querystring: PlayQuery }>(
       '/play/:attemptId',
       async (req, reply) => {
-        const token = req.query.token;
-        if (!token) {
-          return reply.code(401).send({ code: 'unauthorized', message: 'Missing token' });
-        }
-        let payload;
-        try {
-          payload = app.verifyAttemptToken(token);
-        } catch {
-          return reply.code(401).send({ code: 'unauthorized', message: 'Invalid or expired token' });
-        }
-        if (payload.attemptId !== req.params.attemptId) {
-          return reply.code(403).send({ code: 'forbidden', message: 'Token is not valid for this attempt' });
-        }
-
-        const state = await getRuntimeState(payload.tenantId, req.params.attemptId, prisma);
-        if (!state) {
-          return reply.code(404).send({ code: 'attempt_not_found', message: 'Attempt not found' });
-        }
+        const access = await authorize(req.query.token, req.params.attemptId);
+        if ('error' in access) return reply.code(access.status).send(access.error);
+        const { payload, state, token } = access;
 
         const source: ContentSource = req.query.source === 'external' ? 'external' : 'engine';
         const contentUrl = await resolveContentUrl(source, req.query, payload, prisma);
@@ -118,10 +152,38 @@ export function embedRoutes(deps: EmbedRouteDeps): FastifyPluginAsync {
           cmi: withLaunchContext(state),
           contentUrl,
           theme: req.query.theme ?? 'auto',
+          ...replayConfig(req.query),
         });
       },
     );
+
+    /** Verify an attempt token against the attempt it is used for and load its runtime state. */
+    async function authorize(token: string | undefined, attemptId: string | undefined): Promise<Access> {
+      if (!token) return denied(401, 'unauthorized', 'Missing token');
+      if (!attemptId) return denied(400, 'invalid_request', 'attemptId is required');
+      let payload: AttemptTokenPayload;
+      try {
+        payload = app.verifyAttemptToken(token);
+      } catch {
+        return denied(401, 'unauthorized', 'Invalid or expired token');
+      }
+      if (payload.attemptId !== attemptId) {
+        return denied(403, 'forbidden', 'Token is not valid for this attempt');
+      }
+      const state = await getRuntimeState(payload.tenantId, attemptId, prisma);
+      if (!state) return denied(404, 'attempt_not_found', 'Attempt not found');
+      return { token, attemptId, payload, state };
+    }
   };
+
+  /**
+   * Session-replay capture is opt-in per launch (`?replay=1`) and only offered
+   * when the engine accepts capture events at all.
+   */
+  function replayConfig(query: ReplayQuery): { replay?: BridgeReplayConfig } {
+    if (!env.REPLAY_CAPTURE_ENABLED || !isTrue(query.replay)) return {};
+    return { replay: isTrue(query.pointer) ? { pointer: true } : {} };
+  }
 
   async function resolveContentUrl(
     source: ContentSource,

@@ -10,18 +10,47 @@
  * {@link renderPlayerPage} returns a full HTML page that hydrates the runtime
  * server-side (so the API is synchronously ready), sets the auth cookie for
  * engine-hosted content, and embeds the SCO in an iframe.
+ *
+ * Both can opt in to session-replay capture (`config.replay`): tab visibility,
+ * idle stretches, media playback, navigation and (optionally) pointer positions
+ * inside same-origin content, batched to `POST /attempts/:id/replay/events`.
  */
 
-export interface PlayerPageOptions {
+/** Opt-in session-replay capture settings for the bridge. */
+export interface BridgeReplayConfig {
+  /** Record where the learner clicks in the content (x / y relative to its viewport). */
+  pointer?: boolean;
+  /** No input for this long records `idle.start`; `0` turns idle tracking off. Default 60 000. */
+  idleMs?: number;
+  /** How often buffered events are sent. Default 5 000. */
+  flushMs?: number;
+}
+
+/** What the bridge reads from `window.__SCORMFLOW__`. */
+export interface BridgeConfig {
   apiBase: string;
   attemptId: string;
   token: string;
   version: string;
   /** Server-hydrated CMI snapshot so GetValue works before the first fetch. */
   cmi: Record<string, unknown>;
+  /** Present only when the host opted in to capture. */
+  replay?: BridgeReplayConfig;
+}
+
+export interface PlayerPageOptions extends BridgeConfig {
   /** Resolved SCO content URL (engine-hosted or external). */
   contentUrl: string;
   theme: 'light' | 'dark' | 'auto';
+}
+
+/**
+ * Inline `window.__SCORMFLOW__ = …;` statement. JSON is embedded in a script,
+ * so `<` is escaped to keep it from closing the tag.
+ */
+export function renderBridgeConfig(config: BridgeConfig): string {
+  const json = JSON.stringify(config).replace(/</g, '\\u003c');
+  return `window.__SCORMFLOW__ = ${json};`;
 }
 
 /** The standalone runtime bridge script (served at `/runtime.js`). */
@@ -37,6 +66,8 @@ export function renderRuntimeBridge(): string {
   var token = cfg.token;
   var is2004 = cfg.version && cfg.version !== "SCORM_1_2";
   var AUTO_COMMIT_MS = typeof cfg.autoCommitMs === "number" ? cfg.autoCommitMs : 10000;
+  var LOCATION_KEY = is2004 ? "cmi.location" : "cmi.core.lesson_location";
+  var capture = replayCapture(cfg.replay);
 
   var data = {};
   var dirty = {};
@@ -94,6 +125,7 @@ export function renderRuntimeBridge(): string {
     phase = "terminated";
     if (timer) { clearTimeout(timer); timer = null; }
     send(drain(), true).catch(function () {});
+    capture.stop();
   }
 
   function get(el) {
@@ -101,7 +133,11 @@ export function renderRuntimeBridge(): string {
     if (el.slice(-7) === "._count") return String(count(el.slice(0, -7)));
     return data.hasOwnProperty(el) ? data[el] : "";
   }
-  function set(el, val) { data[el] = String(val); dirty[el] = String(val); scheduleCommit(); }
+  function set(el, val) {
+    // Commits only arrive every few seconds; record the move when it happens.
+    if (el === LOCATION_KEY && String(val) !== "" && String(val) !== data[el]) capture.navigate(String(val));
+    data[el] = String(val); dirty[el] = String(val); scheduleCommit();
+  }
 
   // Error codes differ per edition; the bridge only reports lifecycle/keyword
   // errors — the engine is authoritative on value validation at commit time.
@@ -147,6 +183,143 @@ export function renderRuntimeBridge(): string {
   function getErrorString() { return ""; }
   function getDiagnostic() { return ""; }
 
+  // ── Opt-in session replay capture ─────────────────────────────────────
+  // Mirrors @scormflow/player's attachReplayCapture. Keystrokes and typed text
+  // are never recorded — key presses only count as activity. Every event has a
+  // client id, so a re-sent batch is stored once.
+  function replayCapture(rc) {
+    var noop = { navigate: function () {}, stop: function () {} };
+    if (!rc || rc.enabled === false || !attemptId || !token || typeof fetch !== "function") return noop;
+    var IDLE_MS = typeof rc.idleMs === "number" ? rc.idleMs : 60000;
+    var FLUSH_MS = typeof rc.flushMs === "number" ? rc.flushMs : 5000;
+    var BATCH = 100, KEEPALIVE_BATCH = 50, MAX_BUFFERED = 1000, THROTTLE_MS = 1000;
+    var ACTIVITY = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart", "scroll"];
+    var MEDIA = { play: "media.play", pause: "media.pause", ended: "media.ended" };
+    var doc = window.document;
+    var buf = [], off = false, stopped = false, sending = false, seq = 0;
+    var prefix = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+    var idle = false, idleTimer = null, lastReset = 0, unbindContent = [];
+
+    function record(type, location, data) {
+      if (off || stopped) return;
+      var e = { id: prefix + "-" + (seq++).toString(36), type: type, at: new Date().toISOString() };
+      if (location) e.location = location.slice(0, 255);
+      if (data) e.data = data;
+      buf.push(e);
+      if (buf.length > MAX_BUFFERED) buf.splice(0, buf.length - MAX_BUFFERED);
+      if (buf.length >= BATCH) flush(false);
+    }
+    function flush(keepalive) {
+      if (off || !buf.length || (sending && !keepalive)) return;
+      // A one-off keepalive flush (tab hidden / closing) doesn't wait for the
+      // in-flight send — ids make the overlap harmless. Once stopped, sends
+      // chain until the buffer is drained, with keepalive in case the page is
+      // unloading.
+      var chained = !keepalive || stopped;
+      var batch = buf.slice(0, keepalive ? KEEPALIVE_BATCH : BATCH);
+      if (chained) sending = true;
+      fetch(apiBase + "/attempts/" + encodeURIComponent(attemptId) + "/replay/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+        body: JSON.stringify({ events: batch }),
+        keepalive: !!keepalive
+      }).then(function (res) {
+        // 403: capture is off on this engine. 400: the batch will never be accepted.
+        if (res.status === 403) { off = true; buf = []; stopTimers(); return false; }
+        if (!res.ok && res.status !== 400) return false;
+        buf = buf.filter(function (e) { return batch.indexOf(e) === -1; });
+        return true;
+      }, function () { return false; }).then(function (progressed) {
+        if (!chained) return;
+        sending = false;
+        if (progressed && (buf.length >= BATCH || (stopped && buf.length))) flush(stopped);
+      });
+    }
+
+    function listen(target, type, fn, out) {
+      var opts = { capture: true };
+      target.addEventListener(type, fn, opts);
+      out.push(function () { target.removeEventListener(type, fn, opts); });
+    }
+    var host = [];
+
+    var hidden = doc && doc.visibilityState === "hidden";
+    if (doc) listen(doc, "visibilitychange", function () {
+      var now = doc.visibilityState === "hidden";
+      if (now === hidden) return;
+      hidden = now;
+      record(now ? "page.hidden" : "page.visible");
+      if (now) flush(true);
+    }, host);
+    listen(window, "pagehide", function () { flush(true); }, host);
+
+    function armIdle() {
+      if (IDLE_MS <= 0) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(function () { idle = true; record("idle.start"); }, IDLE_MS);
+    }
+    function onActivity() {
+      if (idle) { idle = false; record("idle.end"); }
+      else if (Date.now() - lastReset < THROTTLE_MS) return;
+      lastReset = Date.now();
+      armIdle();
+    }
+    armIdle();
+    if (doc) for (var i = 0; i < ACTIVITY.length; i++) listen(doc, ACTIVITY[i], onActivity, host);
+
+    function unit(n) { return Math.round(Math.min(1, Math.max(0, n)) * 1000) / 1000; }
+    function bindContent(frame) {
+      while (unbindContent.length) unbindContent.pop()();
+      var inner = null;
+      try { inner = frame.contentDocument; } catch (err) { inner = null; } // cross-origin
+      if (!inner) return;
+      var view = inner.defaultView;
+      for (var j = 0; j < ACTIVITY.length; j++) listen(inner, ACTIVITY[j], onActivity, unbindContent);
+      if (rc.pointer) listen(inner, "pointerdown", function (e) {
+        var w = view && view.innerWidth, h = view && view.innerHeight;
+        if (!w || !h || typeof e.clientX !== "number" || typeof e.clientY !== "number") return;
+        record("pointer", null, { x: unit(e.clientX / w), y: unit(e.clientY / h) });
+      }, unbindContent);
+      Object.keys(MEDIA).forEach(function (type) {
+        listen(inner, type, function (e) {
+          var m = e.target || {}, d = {};
+          var src = m.currentSrc || m.src;
+          if (typeof src === "string" && src) d.src = src.slice(0, 200);
+          if (typeof m.currentTime === "number") d.time = Math.round(m.currentTime * 10) / 10;
+          record(MEDIA[type], null, d);
+        }, unbindContent);
+      });
+    }
+    function findFrame() {
+      if (!doc) return;
+      var frame = (rc.iframe && doc.querySelector(rc.iframe)) || doc.getElementById("sco") || doc.querySelector("iframe");
+      if (!frame) return;
+      listen(frame, "load", function () { bindContent(frame); }, host);
+      bindContent(frame);
+    }
+    if (doc && doc.readyState === "loading") listen(doc, "DOMContentLoaded", findFrame, host);
+    else findFrame();
+
+    var flushTimer = FLUSH_MS > 0 ? setInterval(function () { flush(false); }, FLUSH_MS) : null;
+    function stopTimers() {
+      if (flushTimer) { clearInterval(flushTimer); flushTimer = null; }
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    }
+
+    return {
+      navigate: function (location) { record("navigation", location); },
+      stop: function () {
+        if (stopped) return;
+        stopTimers();
+        while (host.length) host.pop()();
+        while (unbindContent.length) unbindContent.pop()();
+        stopped = true;
+        // An in-flight send carries on draining once it settles.
+        if (!sending) flush(true);
+      }
+    };
+  }
+
   if (is2004) {
     window.API_1484_11 = {
       Initialize: initialize, Terminate: finish, GetValue: getValue, SetValue: setValue,
@@ -167,15 +340,14 @@ export function renderRuntimeBridge(): string {
 
 /** Full HTML page for `/play/:attemptId`. */
 export function renderPlayerPage(opts: PlayerPageOptions): string {
-  const config = {
+  const config: BridgeConfig = {
     apiBase: opts.apiBase,
     attemptId: opts.attemptId,
     token: opts.token,
     version: opts.version,
     cmi: opts.cmi,
+    ...(opts.replay ? { replay: opts.replay } : {}),
   };
-  // JSON embedded in a script tag — escape `<` to avoid breaking out of it.
-  const configJson = JSON.stringify(config).replace(/</g, '\\u003c');
   const bg = opts.theme === 'light' ? '#ffffff' : '#0b0d12';
 
   return `<!doctype html>
@@ -188,7 +360,7 @@ export function renderPlayerPage(opts: PlayerPageOptions): string {
   html, body { margin: 0; height: 100%; background: ${bg}; }
   iframe { border: 0; width: 100%; height: 100%; display: block; }
 </style>
-<script>window.__SCORMFLOW__ = ${configJson};</script>
+<script>${renderBridgeConfig(config)}</script>
 <script src="${opts.apiBase}/runtime.js"></script>
 </head>
 <body>
