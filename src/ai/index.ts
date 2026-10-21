@@ -6,6 +6,7 @@ export {
   AiProviderError,
   createProvider,
   isAiProviderId,
+  parseAwsCredentials,
   providerNeedsKey,
   resolveBaseUrl,
   type AIProvider,
