@@ -1,4 +1,4 @@
-import { extractZipToStorage, readZipEntry, ZipExtractionError } from './zip.js';
+import { extractZipToStorage, readZipEntry, ZipExtractionError, type ExtractedFile } from './zip.js';
 import { parseImsManifest, ManifestParseError, type ParsedManifest } from './manifest.js';
 
 import type { StorageAdapter } from '../storage/types.js';
@@ -10,7 +10,7 @@ export {
   readZipInventory,
   ZipExtractionError,
 } from './zip.js';
-export type { ZipInventory, ZipInventoryEntry } from './zip.js';
+export type { ExtractedFile, ZipInventory, ZipInventoryEntry } from './zip.js';
 export { parseImsManifest, parseManifestTree, ManifestParseError } from './manifest.js';
 export type { ParsedManifest, ManifestSco, ScormVersion } from './manifest.js';
 
@@ -36,6 +36,8 @@ export interface IngestedPackage {
   storagePrefix: string;
   /** Number of files written to storage. */
   fileCount: number;
+  /** Every file written, with its size and SHA-256. */
+  files: ExtractedFile[];
   /** Total uncompressed bytes written to storage. */
   sizeBytes: number;
 }
@@ -76,6 +78,7 @@ export async function ingestScormPackage(
     manifest,
     storagePrefix: options.storagePrefix,
     fileCount: extraction.files.length,
+    files: extraction.files,
     sizeBytes: extraction.totalBytes,
   };
 }

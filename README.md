@@ -58,7 +58,14 @@ POST   /api/v1/courses                        Upload + register a SCORM package
 POST   /api/v1/courses/validate               Validate a package without registering (full report)
 GET    /api/v1/courses                        List courses for the tenant
 GET    /api/v1/courses/:id                    Course metadata + SCO tree
-GET    /api/v1/courses/:id/content/*          Stream an extracted package file
+GET    /api/v1/courses/:id/content/*          Stream an extracted package file (attempt tokens get their pinned release)
+
+GET    /api/v1/courses/:id/versions           Releases, newest first (the course changelog)
+POST   /api/v1/courses/:id/versions           Publish a new release (multipart; label / bump / releaseNotes / activate)
+GET    /api/v1/courses/:id/versions/diff      Metadata + SCO + asset diff (?from=&to=, defaults to live vs previous)
+GET    /api/v1/courses/:id/versions/:number   One release
+PATCH  /api/v1/courses/:id/versions/:number   Edit its release notes
+POST   /api/v1/courses/:id/rollback           Make an existing release live again ({ version })
 
 POST   /api/v1/courses/:id/attempts           Start or resume a learner attempt
 GET    /api/v1/attempts/:id                   Attempt state (objectives, interactions)
@@ -171,6 +178,34 @@ also validates cmi5 packages (`cmi5.xml` + AU launch files) and exits `0` valid,
 `1` invalid, `2` on usage or I/O errors. In code: `validateScormPackage(buffer,
 { accept: 'any' })`.
 
+### Course versioning
+
+Courses are released like software. The first upload is release `1.0`;
+`POST /courses/:id/versions` publishes the next one (`1.1`, or `2.0` with
+`bump=major`, or any `label` you pass) under its own storage prefix, so every
+release stays launchable:
+
+```bash
+curl -X POST $ENGINE/api/v1/courses/$COURSE/versions -H "X-API-Key: $KEY" \
+  -F file=@course-v2.zip -F releaseNotes="New quiz, fixed module 3 typo"
+curl "$ENGINE/api/v1/courses/$COURSE/versions/diff" -H "X-API-Key: $KEY"     # live vs previous
+curl -X POST $ENGINE/api/v1/courses/$COURSE/rollback -H "X-API-Key: $KEY" \
+  -H "content-type: application/json" -d '{"version":1}'
+```
+
+- **Pinned attempts.** An attempt remembers the release it launched on; its
+  content, `/play` launch file and SCO hrefs keep coming from that release
+  after a publish or rollback. New attempts get the live release.
+- **Diffs** compare metadata, the SCO list (by manifest identifier) and every
+  file (by SHA-256, hashed while the package is extracted), and list
+  `breakingChanges` — removed SCOs, SCOs launching a different file, a SCORM
+  edition change.
+- **Rollback** only moves the course's live pointer; nothing is re-uploaded.
+  `activate=false` stages a release without making it live.
+- Events: `course.version.published`, `course.version.rolled_back`.
+- Courses uploaded before versioning get a baseline release `1.0` (no file
+  inventory, so its asset diff is `null`) the first time you publish to them.
+
 ### xAPI attachments
 
 Send statements with attachment bodies as `multipart/mixed`: the statement JSON
@@ -231,7 +266,8 @@ Events: `attempt.started`, `attempt.suspended`, `attempt.terminated`, `course.co
 `course.passed`, `course.failed`, `score.updated` (SCORM attempts — each fires on
 the transition, not on every commit); `objective.mastered` (a SCORM objective's
 success status first becomes `passed`, matched by objective id);
-`certificate.issued`, `certificate.revoked`; `cmi5.session.terminated`, `cmi5.session.abandoned`, `cmi5.au.waived`,
+`certificate.issued`, `certificate.revoked`; `course.version.published`,
+`course.version.rolled_back`; `cmi5.session.terminated`, `cmi5.session.abandoned`, `cmi5.au.waived`,
 `cmi5.block.satisfied`, `cmi5.course.satisfied`; `xapi.statement.stored` (once
 per newly stored LRS statement — including cmi5 and LMS-issued ones, never for a
 duplicate resend; `data.statement` is the stored statement); and `webhook.test`.
@@ -560,7 +596,7 @@ Checkboxes reflect the actual state of `main`.
 - [x] PII redaction pass for AI prompts
 - [x] AI key encryption at rest, per-feature configs, monthly token caps + alerts, kill-switch, call audit log
 - [x] Session replay (event timeline from commits + opt-in capture, course heatmaps, engagement scoring)
-- [ ] Git-style course versioning (releases, diffs, rollback)
+- [x] Git-style course versioning (releases, changelog, metadata/SCO/asset diffs, rollback, pinned attempts)
 - [ ] Universal Learning Content Gateway (SCORM / xAPI / cmi5 / H5P / HTML / video / PDF)
 - [ ] Compliance dashboards (audit log, attestation, certification expiry)
 - [ ] Learning data warehouse export (BigQuery / Snowflake / Redshift / S3 Parquet)
@@ -584,7 +620,7 @@ Requires Node ≥ 20.
 
 The engine is not deployed anywhere yet, so there are no migration files:
 `prisma/schema.prisma` is the source of truth and every schema change (such as
-the `Certificate` table) reaches your database with:
+the `Certificate` or `CourseVersion` tables) reaches your database with:
 
 ```bash
 npm run db:push             # = prisma db push: create/alter tables to match the schema, regenerate the client

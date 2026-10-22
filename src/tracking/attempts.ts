@@ -79,7 +79,7 @@ export async function startOrResumeAttempt(
 ): Promise<StartedAttempt> {
   const course = await prisma.course.findFirst({
     where: { id: input.courseId, tenantId: input.tenantId },
-    select: { id: true, scormVersion: true, masteryScore: true },
+    select: { id: true, scormVersion: true, masteryScore: true, currentVersionId: true },
   });
   if (!course) {
     throw new AttemptServiceError('Course not found', 'course_not_found');
@@ -141,6 +141,8 @@ export async function startOrResumeAttempt(
       courseId: input.courseId,
       learnerId: learner.id,
       scoId: input.scoId ?? null,
+      // Pin the live release so a later publish or rollback can't swap content mid-attempt.
+      courseVersionId: course.currentVersionId ?? null,
       status: 'IN_PROGRESS',
       totalTimeSeconds: priorTotalSeconds,
     },
