@@ -140,3 +140,13 @@ export type {
   RedisTransportOptions,
   SubscribeOptions,
 } from './events/index.js';
+export { ActivityCounter, analyticsPlugin, definePlugin, PluginError, pluginsFromEnv } from './plugins/index.js';
+export type {
+  ActivityBucket,
+  ActivityReport,
+  AnalyticsPluginOptions,
+  InstalledPlugin,
+  PluginContext,
+  PluginRoutes,
+  ScormflowPlugin,
+} from './plugins/index.js';

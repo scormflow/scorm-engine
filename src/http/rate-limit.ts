@@ -95,7 +95,10 @@ export interface TenantRateLimitPluginOptions {
 
 const tenantRateLimitPlugin: FastifyPluginAsync<TenantRateLimitPluginOptions> = async (app, opts) => {
   const { limiter } = opts;
-  if (!limiter.enabled) return;
+  if (!limiter.enabled) {
+    app.decorate('tenantRateLimit', null);
+    return;
+  }
 
   const enforce: preHandlerHookHandler = async (req: FastifyRequest, reply: FastifyReply) => {
     if (!req.tenantId) return;
@@ -115,6 +118,8 @@ const tenantRateLimitPlugin: FastifyPluginAsync<TenantRateLimitPluginOptions> = 
     }
   };
 
+  app.decorate('tenantRateLimit', enforce);
+
   // Append the check after each route's own preHandlers, which is where the
   // auth guards resolve the tenant.
   app.addHook('onRoute', (route) => {
@@ -123,6 +128,16 @@ const tenantRateLimitPlugin: FastifyPluginAsync<TenantRateLimitPluginOptions> = 
     route.preHandler = [...(Array.isArray(existing) ? existing : [existing]), enforce];
   });
 };
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    /**
+     * The per-tenant limit check, for routes that gain their auth guard after
+     * registration (plugin routes); `null` when limiting is off.
+     */
+    tenantRateLimit: preHandlerHookHandler | null;
+  }
+}
 
 export const tenantRateLimit = fp(tenantRateLimitPlugin, {
   name: 'tenant-rate-limit',

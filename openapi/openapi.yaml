@@ -114,6 +114,14 @@ tags:
       webhooks remain the durable channel. Both channels share event ids, so
       a consumer of both can dedupe. With `EVENT_BUS_DRIVER=redis` every engine
       instance's stream sees every event, whichever instance raised it.
+  - name: Plugins
+    description: |
+      Engine extensions installed with `buildApp({ plugins: [...] })` (or, for
+      the built-ins, `PLUGINS=analytics`). Each plugin's routes live under
+      `/plugins/{name}` and need an API key. The built-in `analytics` plugin
+      counts each tenant's events per minute over a rolling window, in memory:
+      counts start from zero when the process restarts, and the `/analytics`
+      endpoints remain the durable record.
   - name: Certificates
     description: |
       PDF completion certificates. When `CERTIFICATES_ENABLED` (the default),
@@ -1579,6 +1587,55 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /plugins:
+    get:
+      tags: [Plugins]
+      summary: List installed plugins
+      responses:
+        '200':
+          description: Installed plugins, in install order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/InstalledPlugin' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /plugins/analytics/activity:
+    get:
+      tags: [Plugins]
+      summary: Live event activity (analytics plugin)
+      description: |
+        The tenant's engine events counted per minute over the last `minutes`
+        minutes, oldest minute first, empty minutes included. Only present
+        when the `analytics` plugin is installed (404 otherwise). Test
+        webhook events are not counted.
+      parameters:
+        - name: minutes
+          in: query
+          required: false
+          description: Window size; defaults to, and may not exceed, the plugin's retention (60 by default).
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Activity report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActivityReport' }
+        '400':
+          description: '`minutes` is not an integer within the retention window (`code: invalid_request`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
   /webhooks/{webhookId}:
     parameters:
       - name: webhookId
@@ -2915,6 +2972,39 @@ components:
             `learnerId`, `completionStatus`, `successStatus`, `score` and
             `totalTimeSeconds`; cmi5 events carry `registrationId`, `courseId`,
             `actor`, and the `au` or `block` concerned.
+
+    InstalledPlugin:
+      type: object
+      required: [name, version]
+      properties:
+        name: { type: string, example: analytics }
+        version: { type: [string, 'null'], example: 1.0.0 }
+
+    EventCounts:
+      type: object
+      description: Event count by event type; types with no events are omitted.
+      propertyNames: { $ref: '#/components/schemas/WebhookEventType' }
+      additionalProperties: { type: integer }
+
+    ActivityBucket:
+      type: object
+      required: [minute, total, counts]
+      properties:
+        minute: { type: string, format: date-time, description: Start of the minute. }
+        total: { type: integer }
+        counts: { $ref: '#/components/schemas/EventCounts' }
+
+    ActivityReport:
+      type: object
+      required: [windowMinutes, since, total, totals, timeline]
+      properties:
+        windowMinutes: { type: integer }
+        since: { type: string, format: date-time, description: Start of the oldest minute in `timeline`. }
+        total: { type: integer }
+        totals: { $ref: '#/components/schemas/EventCounts' }
+        timeline:
+          type: array
+          items: { $ref: '#/components/schemas/ActivityBucket' }
 
     WebhookDelivery:
       type: object

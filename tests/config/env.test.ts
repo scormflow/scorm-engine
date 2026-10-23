@@ -76,6 +76,16 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...baseEnv, EVENT_BUS_DRIVER: 'kafka' })).toThrow(/EVENT_BUS_DRIVER/);
   });
 
+  it('reads PLUGINS as a comma-separated list of built-in plugin names', () => {
+    expect(loadEnv(baseEnv).PLUGINS).toEqual([]);
+    resetEnvForTests();
+    expect(loadEnv({ ...baseEnv, PLUGINS: '' }).PLUGINS).toEqual([]);
+    resetEnvForTests();
+    expect(loadEnv({ ...baseEnv, PLUGINS: ' analytics , ' }).PLUGINS).toEqual(['analytics']);
+    resetEnvForTests();
+    expect(() => loadEnv({ ...baseEnv, PLUGINS: 'analytics,nope' })).toThrow(/PLUGINS/);
+  });
+
   it('caches the parsed env across calls', () => {
     const a = loadEnv(baseEnv);
     const b = loadEnv({ ...baseEnv, PORT: '9999' });
