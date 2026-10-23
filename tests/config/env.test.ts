@@ -47,6 +47,18 @@ describe('loadEnv', () => {
     expect(loadEnv(baseEnv).XAPI_AUTHORITY_HOMEPAGE).toBe('https://scormflow.dev/lrs');
   });
 
+  it('defaults certificates on and treats blank optional settings as unset', () => {
+    const env = loadEnv({ ...baseEnv, CERTIFICATE_VERIFY_BASE_URL: '', CERTIFICATE_ACCENT_COLOR: ' ' });
+    expect(env.CERTIFICATES_ENABLED).toBe(true);
+    expect(env.CERTIFICATE_ISSUER).toBe('ScormFlow');
+    expect(env.CERTIFICATE_VERIFY_BASE_URL).toBeUndefined();
+    expect(env.CERTIFICATE_ACCENT_COLOR).toBeUndefined();
+  });
+
+  it('rejects a malformed CERTIFICATE_ACCENT_COLOR', () => {
+    expect(() => loadEnv({ ...baseEnv, CERTIFICATE_ACCENT_COLOR: 'navy' })).toThrow(/CERTIFICATE_ACCENT_COLOR/);
+  });
+
   it('caches the parsed env across calls', () => {
     const a = loadEnv(baseEnv);
     const b = loadEnv({ ...baseEnv, PORT: '9999' });

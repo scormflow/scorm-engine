@@ -16,6 +16,9 @@ export const WEBHOOK_EVENT_TYPES = [
   'course.failed',
   'score.updated',
   'objective.mastered',
+  // Certificates
+  'certificate.issued',
+  'certificate.revoked',
   // cmi5
   'cmi5.session.terminated',
   'cmi5.session.abandoned',
