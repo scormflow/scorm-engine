@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { AiProviderError, createProvider, resolveBaseUrl, type AiProviderId } from '../../src/ai/index.js';
+import {
+  AiProviderError,
+  createProvider,
+  parseAwsCredentials,
+  resolveBaseUrl,
+  type AiProviderId,
+} from '../../src/ai/index.js';
+import { sha256Hex, signRequest } from '../../src/storage/sigv4.js';
 
 interface Captured {
   url: string;
@@ -117,6 +124,172 @@ describe('provider adapters', () => {
 
   it('requires a key for hosted providers', () => {
     expect(() => createProvider({ provider: 'openai', model: 'm' })).toThrow(/needs an apiKey/);
+    for (const id of ['groq', 'together', 'azure_openai', 'bedrock'] as const) {
+      expect(() => createProvider({ provider: id, model: 'm', baseUrl: 'https://bedrock-runtime.us-east-1.amazonaws.com' })).toThrow(
+        /needs an apiKey/,
+      );
+    }
+  });
+
+  it.each<[AiProviderId, string]>([
+    ['groq', 'https://api.groq.com/openai/v1/chat/completions'],
+    ['together', 'https://api.together.xyz/v1/chat/completions'],
+  ])('%s: hosted OpenAI-compatible API with a bearer key', async (id, url) => {
+    const { fetchImpl, calls } = stubFetch({
+      model: 'llama-test',
+      choices: [{ message: { content: 'ok' } }],
+      usage: { prompt_tokens: 5, completion_tokens: 1 },
+    });
+    const out = await createProvider({ provider: id, model: 'llama', apiKey: 'gk', fetch: fetchImpl }).complete(request);
+    expect(out).toEqual({ text: 'ok', inputTokens: 5, outputTokens: 1, model: 'llama-test' });
+    expect(calls[0]!.url).toBe(url);
+    expect(calls[0]!.headers.authorization).toBe('Bearer gk');
+    expect(calls[0]!.body).toMatchObject({ model: 'llama', max_tokens: 100 });
+  });
+
+  it('azure_openai: v1 API under the resource endpoint, api-key header, deployment as model', async () => {
+    expect(() => createProvider({ provider: 'azure_openai', model: 'd', apiKey: 'k' })).toThrow(/openai\.azure\.com/);
+    const { fetchImpl, calls } = stubFetch({
+      model: 'gpt-4o-2024-11-20',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 9, completion_tokens: 1 },
+    });
+    const out = await createProvider({
+      provider: 'azure_openai',
+      model: 'my-deployment',
+      apiKey: 'az-key',
+      baseUrl: 'https://acme.openai.azure.com/',
+      fetch: fetchImpl,
+    }).complete(request);
+
+    expect(out).toEqual({ text: 'hi', inputTokens: 9, outputTokens: 1, model: 'gpt-4o-2024-11-20' });
+    expect(calls[0]!.url).toBe('https://acme.openai.azure.com/openai/v1/chat/completions');
+    expect(calls[0]!.headers['api-key']).toBe('az-key');
+    expect(calls[0]!.headers.authorization).toBeUndefined();
+    expect(calls[0]!.body).toMatchObject({ model: 'my-deployment', max_completion_tokens: 100 });
+
+    // An explicit API path is kept as given.
+    expect(resolveBaseUrl('azure_openai', 'https://acme.openai.azure.com/openai/v1', false)).toBe(
+      'https://acme.openai.azure.com/openai/v1',
+    );
+  });
+
+  const converseReply = {
+    output: { message: { role: 'assistant', content: [{ text: 'Hola' }, { text: '!' }] } },
+    usage: { inputTokens: 14, outputTokens: 2, totalTokens: 16 },
+    stopReason: 'end_turn',
+  };
+
+  it('bedrock: Converse API with a Bedrock API key as bearer token', async () => {
+    const { fetchImpl, calls } = stubFetch(converseReply);
+    const out = await createProvider({
+      provider: 'bedrock',
+      model: 'anthropic.claude-test-v1:0',
+      apiKey: 'ABSKbedrockapikey',
+      baseUrl: 'https://bedrock-runtime.eu-west-1.amazonaws.com',
+      fetch: fetchImpl,
+    }).complete(request);
+
+    expect(out).toEqual({ text: 'Hola!', inputTokens: 14, outputTokens: 2, model: 'anthropic.claude-test-v1:0' });
+    expect(calls[0]!.url).toBe('https://bedrock-runtime.eu-west-1.amazonaws.com/model/anthropic.claude-test-v1%3A0/converse');
+    expect(calls[0]!.headers.authorization).toBe('Bearer ABSKbedrockapikey');
+    expect(calls[0]!.body).toEqual({
+      system: [{ text: 'be brief' }],
+      messages: [{ role: 'user', content: [{ text: 'hello' }] }],
+      inferenceConfig: { maxTokens: 100 },
+    });
+  });
+
+  it('bedrock: IAM credentials sign the request with SigV4 (path encoded twice)', async () => {
+    const { fetchImpl, calls } = stubFetch(converseReply);
+    const date = new Date('2026-10-21T08:00:00Z');
+    const provider = createProvider({
+      provider: 'bedrock',
+      model: 'anthropic.claude-test-v1:0',
+      apiKey: 'AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY:session-token-1',
+      baseUrl: 'https://bedrock-runtime.us-east-1.amazonaws.com',
+      fetch: fetchImpl,
+      now: () => date,
+    });
+    await provider.complete(request);
+
+    const headers = calls[0]!.headers;
+    expect(headers['x-amz-date']).toBe('20261021T080000Z');
+    expect(headers['x-amz-security-token']).toBe('session-token-1');
+    expect(headers.authorization).toMatch(
+      /^AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE\/20261021\/us-east-1\/bedrock\/aws4_request, SignedHeaders=accept;content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature=[0-9a-f]{64}$/,
+    );
+
+    const credentials = { accessKeyId: 'AKIAIOSFODNN7EXAMPLE', secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', sessionToken: 'session-token-1' };
+    const sign = (path: string) =>
+      signRequest(
+        {
+          method: 'POST',
+          protocol: 'https:',
+          host: 'bedrock-runtime.us-east-1.amazonaws.com',
+          path,
+          headers: { 'content-type': 'application/json', accept: 'application/json' },
+          payloadHash: sha256Hex(JSON.stringify(calls[0]!.body)),
+        },
+        { credentials, region: 'us-east-1', service: 'bedrock', date },
+      ).headers.authorization;
+    expect(headers.authorization).toBe(sign('/model/anthropic.claude-test-v1%253A0/converse'));
+    expect(headers.authorization).not.toBe(sign('/model/anthropic.claude-test-v1%3A0/converse'));
+  });
+
+  it('bedrock: needs a bedrock-runtime endpoint and scrubs IAM secrets from errors', async () => {
+    expect(() => createProvider({ provider: 'bedrock', model: 'm', apiKey: 'k' })).toThrow(/bedrock-runtime\.us-east-1/);
+    expect(() => resolveBaseUrl('bedrock', 'https://api.example.com', false)).toThrow(/bedrock-runtime endpoint/);
+    expect(resolveBaseUrl('bedrock', 'https://bedrock-runtime-fips.us-gov-west-1.amazonaws.com', false)).toBe(
+      'https://bedrock-runtime-fips.us-gov-west-1.amazonaws.com',
+    );
+
+    const { fetchImpl } = stubFetch({ message: 'The security token included in the request is invalid: secretXYZ' }, 403);
+    const err = await createProvider({
+      provider: 'bedrock',
+      model: 'm',
+      apiKey: 'AKIAIOSFODNN7EXAMPLE:secretXYZ',
+      baseUrl: 'https://bedrock-runtime.us-east-1.amazonaws.com',
+      fetch: fetchImpl,
+    })
+      .complete(request)
+      .catch((e) => e);
+    expect(err.code).toBe('ai_provider_auth');
+    expect(err.message).not.toContain('secretXYZ');
+  });
+
+  it('parseAwsCredentials tells IAM credentials from Bedrock API keys', () => {
+    expect(parseAwsCredentials('AKIAIOSFODNN7EXAMPLE:abc/def+ghi')).toEqual({
+      accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+      secretAccessKey: 'abc/def+ghi',
+    });
+    expect(parseAwsCredentials('ASIAIOSFODNN7EXAMPLE:s:tok==')).toMatchObject({ sessionToken: 'tok==' });
+    expect(parseAwsCredentials('ABSKQmVkcm9ja0FQSUtleS1leGFtcGxl')).toBeNull();
+    expect(parseAwsCredentials('bedrock-api-key-YmVkcm9jay5hbWF6b25hd3MuY29t')).toBeNull();
+  });
+
+  it('custom_http: POSTs the ScormFlow contract to the exact URL', async () => {
+    expect(() => createProvider({ provider: 'custom_http', model: 'm' })).toThrow(/baseUrl is required/);
+    const { fetchImpl, calls } = stubFetch({ text: 'done', inputTokens: 30, outputTokens: 4, model: 'in-house-7b' });
+    const out = await createProvider({
+      provider: 'custom_http',
+      model: 'house',
+      apiKey: 'gw-token',
+      baseUrl: 'https://ai.example.com/v2/complete',
+      fetch: fetchImpl,
+    }).complete(request);
+
+    expect(out).toEqual({ text: 'done', inputTokens: 30, outputTokens: 4, model: 'in-house-7b' });
+    expect(calls[0]!.url).toBe('https://ai.example.com/v2/complete');
+    expect(calls[0]!.headers.authorization).toBe('Bearer gw-token');
+    expect(calls[0]!.body).toEqual({ model: 'house', system: 'be brief', prompt: 'hello', maxTokens: 100 });
+
+    const bad = stubFetch({ answer: 'wrong shape' });
+    const err = await createProvider({ provider: 'custom_http', model: 'm', baseUrl: 'https://ai.example.com', fetch: bad.fetchImpl })
+      .complete(request)
+      .catch((e) => e);
+    expect(err).toMatchObject({ code: 'ai_provider_error' });
+    expect(bad.calls[0]!.headers.authorization).toBeUndefined();
   });
 
   it('maps a 401 to ai_provider_auth and scrubs an echoed key', async () => {

@@ -166,6 +166,22 @@ describe('AI analytics routes', () => {
     expect((await put('default', { provider: 'skynet', model: 'm' })).json().code).toBe('invalid_request');
     expect((await put('default', { provider: 'openai', model: 'm' })).json().message).toMatch(/needs an apiKey/);
     expect((await put('default', { provider: 'ollama', model: 'llama3' })).json().message).toMatch(/AI_ALLOW_PRIVATE_URLS/);
+    expect((await put('default', { provider: 'skynet', model: 'm' })).json().message).toMatch(/bedrock, custom_http/);
+    expect((await put('default', { provider: 'bedrock', model: 'm', apiKey: 'k' })).json().message).toMatch(
+      /baseUrl is required for provider bedrock/,
+    );
+    const bedrock = await put('insights', {
+      provider: 'bedrock',
+      model: 'anthropic.claude-test-v1:0',
+      apiKey: 'AKIAIOSFODNN7EXAMPLE:secret-access-key',
+      baseUrl: 'https://bedrock-runtime.us-east-1.amazonaws.com',
+    });
+    expect(bedrock.statusCode).toBe(201);
+    expect(bedrock.body).not.toContain('secret-access-key');
+    expect(
+      (await put('recommendations', { provider: 'azure_openai', model: 'dep', apiKey: 'az', baseUrl: 'https://acme.openai.azure.com' })).json()
+        .baseUrl,
+    ).toBe('https://acme.openai.azure.com');
     expect(
       (await put('default', { provider: 'openai', model: 'm', apiKey: 'k', alertThreshold: 2 })).json().message,
     ).toMatch(/alertThreshold/);

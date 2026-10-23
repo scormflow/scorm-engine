@@ -342,7 +342,8 @@ attempt's player token. Turn the feature off with `CERTIFICATES_ENABLED=false`.
 ### AI analytics (bring your own AI)
 
 Set `AI_MASTER_KEY` and each tenant can plug in its own model — OpenAI,
-Anthropic, Gemini, Mistral, a local Ollama, or any OpenAI-compatible endpoint.
+Anthropic, Gemini, Mistral, Groq, Together, Azure OpenAI, AWS Bedrock, a local
+Ollama, any OpenAI-compatible endpoint, or your own HTTP service.
 The engine never bundles or proxies a default model.
 
 ```bash
@@ -379,6 +380,17 @@ curl -X POST $ENGINE/api/v1/ai/insights -H "X-API-Key: $KEY" \
   prompt's SHA-256, provider, model, tokens and cost (`GET /ai/calls`, CSV export).
 
 Provider URLs on private networks (a local Ollama) need `AI_ALLOW_PRIVATE_URLS=true`.
+
+| Provider | `baseUrl` | `apiKey` |
+|---|---|---|
+| `azure_openai` | resource endpoint, `https://<resource>.openai.azure.com` (v1 API) | resource key; `model` is the deployment name |
+| `bedrock` | `https://bedrock-runtime.<region>.amazonaws.com` (Converse API) | Bedrock API key, or IAM `ACCESS_KEY_ID:SECRET[:SESSION_TOKEN]` (SigV4-signed) |
+| `groq`, `together` | optional | required |
+| `custom_http` | the exact URL to POST to | optional bearer token |
+
+`custom_http` sends `{ model, system, prompt, maxTokens }` and expects
+`{ text, inputTokens?, outputTokens?, model? }` — put it in front of an AI
+gateway or an in-house model service.
 
 ### Session replay
 
@@ -544,9 +556,9 @@ Checkboxes reflect the actual state of `main`.
 
 ### Phase 3 — Category-defining
 - [x] AI analytics layer with BYO provider + key (OpenAI / Anthropic / Gemini / Mistral / Ollama / OpenAI-compatible)
+- [x] AI providers, phase 2: Groq, Together, Azure OpenAI, AWS Bedrock (API key or SigV4), custom HTTP endpoint
 - [x] PII redaction pass for AI prompts
 - [x] AI key encryption at rest, per-feature configs, monthly token caps + alerts, kill-switch, call audit log
-- [ ] AI providers, phase 2: Azure OpenAI, AWS Bedrock (Groq / Together work today as `openai_compatible`)
 - [x] Session replay (event timeline from commits + opt-in capture, course heatmaps, engagement scoring)
 - [ ] Git-style course versioning (releases, diffs, rollback)
 - [ ] Universal Learning Content Gateway (SCORM / xAPI / cmi5 / H5P / HTML / video / PDF)

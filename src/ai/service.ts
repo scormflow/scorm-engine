@@ -6,6 +6,7 @@ import { buildInsightContext, type HeatmapLoader } from './context.js';
 import { KeyVault, keyHint } from './keys.js';
 import { buildPrompt, INSIGHT_KINDS, type InsightKind } from './prompts.js';
 import {
+  AI_PROVIDERS,
   AiProviderError,
   createProvider,
   isAiProviderId,
@@ -188,7 +189,7 @@ export class AiService {
 
   async putConfig(tenantId: string, feature: AiFeature, input: AiConfigInput): Promise<{ config: AiConfigView; created: boolean }> {
     if (!isAiProviderId(input.provider)) {
-      throw new AiError(400, 'invalid_request', 'provider must be one of openai, anthropic, gemini, mistral, ollama, openai_compatible');
+      throw new AiError(400, 'invalid_request', `provider must be one of ${AI_PROVIDERS.join(', ')}`);
     }
     const provider = input.provider;
     const model = requireString(input.model, 'model', 200);
@@ -249,7 +250,7 @@ export class AiService {
    */
   async testKey(input: AiConfigInput): Promise<{ ok: boolean; provider: AiProviderId; model: string; latencyMs: number; error?: { code: string; message: string } }> {
     if (!isAiProviderId(input.provider)) {
-      throw new AiError(400, 'invalid_request', 'provider must be one of openai, anthropic, gemini, mistral, ollama, openai_compatible');
+      throw new AiError(400, 'invalid_request', `provider must be one of ${AI_PROVIDERS.join(', ')}`);
     }
     const model = requireString(input.model, 'model', 200);
     const apiKey = input.apiKey == null ? null : requireString(input.apiKey, 'apiKey', 1000);
