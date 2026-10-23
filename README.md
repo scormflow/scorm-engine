@@ -117,6 +117,8 @@ POST   /api/v1/webhooks/:id/test              Send a signed webhook.test event
 GET    /api/v1/webhooks/:id/deliveries        Delivery log (filter by status / event)
 POST   /api/v1/webhooks/deliveries/:id/retry  Re-send a delivery, incl. dead-lettered ones
 
+GET    /api/v1/events/stream                  Live engine events over SSE (`?types=` to filter)
+
 GET    /api/v1/certificates                   List certificates (filter by learner / course / status)
 GET    /api/v1/certificates/:id               One certificate
 GET    /api/v1/certificates/:id/pdf           The certificate PDF (`?download=1` to save)
@@ -213,6 +215,40 @@ share one database. Endpoint URLs on localhost / private / link-local addresses
 are refused unless `WEBHOOK_ALLOW_PRIVATE_URLS=true`; this check does not resolve
 DNS, so pair it with egress filtering if tenants are untrusted.
 
+### Event bus and live events
+
+Services never call webhooks (or anything else) directly: they publish to the
+engine's event bus, which stamps each event with an id and timestamp and hands
+it to two kinds of receivers. **Subscribers** do work — the webhook dispatcher
+is one — and each event reaches one engine instance. **Listeners** observe —
+the live stream below is one — and run on every instance.
+
+`EVENT_BUS_DRIVER=memory` (the default) keeps events in-process.
+`EVENT_BUS_DRIVER=redis` (with `REDIS_URL`, Redis 6.2+) carries them over a Redis
+stream: subscribers read through a consumer group, so a cluster sends each
+webhook once; an event whose subscriber fails stays pending, is retried once it
+has been idle for a minute, and after five deliveries is copied to
+`<stream>:dead`. The Redis client is built in (RESP over `node:net`/`node:tls`),
+so there is no extra dependency. Embedders can attach their own subscribers:
+
+```ts
+const app = await buildApp({ env });
+app.events.subscribe('crm-sync', async (event) => {
+  if (event.type === 'course.completed') await crm.markComplete(event.data.attemptId);
+}); // idempotent on event.id — redelivery is possible with Redis
+```
+
+`GET /api/v1/events/stream` (API key) is a Server-Sent Events feed of the
+tenant's events, each message carrying the same `{ id, type, createdAt, data }`
+a webhook receives — handy for dashboards that don't want a public endpoint.
+Filter with `?types=course.completed,certificate.issued`. Events are not
+replayed after a reconnect (webhooks are the durable channel); idle streams get
+a `: ping` comment every `EVENT_STREAM_HEARTBEAT_SECONDS`.
+
+```bash
+curl -N $ENGINE/api/v1/events/stream -H "X-API-Key: $KEY"
+```
+
 ### Certificates
 
 The first time an attempt is completed and not failed (SCORM 1.2 `passed` /
@@ -244,6 +280,7 @@ src/
 ├── tracking/     Attempt + progress persistence                [done]
 ├── xapi/         Built-in LRS (statements, documents, lookups) [done]
 ├── cmi5/         cmi5 course structure, launch, statement rules [done]
+├── events/       Event bus: memory + Redis Streams transports  [done]
 ├── webhooks/     Endpoints, signing, delivery + retry worker   [done]
 ├── certificates/ Completion certificates + PDF writer          [done]
 ├── storage/      Storage adapters: local disk, S3 / R2 / MinIO [done]
@@ -284,6 +321,11 @@ Database: PostgreSQL (production) or SQLite (dev). ORM: Prisma. Schema in [`pris
 | `WEBHOOK_TIMEOUT_MS` | Per-attempt request timeout (default 10000) |
 | `WEBHOOK_WORKER_INTERVAL_MS` | Retry poll interval; `0` disables the poller (default 5000) |
 | `WEBHOOK_ALLOW_PRIVATE_URLS` | Allow endpoints on localhost / private networks (default false) |
+| `EVENT_BUS_DRIVER` | `memory` (default) or `redis` — needed once several engine instances share a database |
+| `REDIS_URL` | `redis://[user:pass@]host:port[/db]` or `rediss://…`; required for the `redis` event bus |
+| `EVENT_BUS_STREAM`, `EVENT_BUS_GROUP` | Redis stream key and consumer group (default `scormflow:events` / `scormflow`) |
+| `EVENT_BUS_MAX_LENGTH` | Approximate cap on the Redis stream (default 100000) |
+| `EVENT_STREAM_HEARTBEAT_SECONDS` | Keep-alive interval on `/events/stream` (default 15) |
 | `CERTIFICATES_ENABLED` | Issue PDF certificates on completion (default true) |
 | `CERTIFICATE_ISSUER` | Organization printed as the issuer (default `ScormFlow`) |
 | `CERTIFICATE_VERIFY_BASE_URL` | Public verification page; `<base>/<serial>` is printed on each certificate |
@@ -338,7 +380,8 @@ Checkboxes reflect the actual state of `main`.
 - [x] Webhook events for xAPI statements and SCORM objectives (`objective.mastered`)
 - [x] Offline sync queue + reconciliation (`POST /attempts/:id/sync`, idempotent `seq` replay, conflict reporting)
 - [x] Certificate engine (PDF generation on completion, public verification, revocation)
-- [ ] Event bus (BullMQ / Redis streams)
+- [x] Event bus (in-process or Redis Streams; consumer-group work delivery, retries, dead-letter stream)
+- [x] Live event stream (`GET /events/stream`, Server-Sent Events)
 - [ ] Plugin system (`plugins: [analyticsPlugin(), certificatePlugin()]`)
 
 ### Phase 3 — Category-defining

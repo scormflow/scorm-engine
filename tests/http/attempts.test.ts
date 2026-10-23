@@ -466,7 +466,8 @@ describe('attempts runtime routes (webhook events)', () => {
   beforeEach(async () => {
     events = [];
     const spy = {
-      emit: (tenantId: string, type: string, data: Record<string, any>) => events.push({ tenantId, type, data }),
+      enqueue: async ({ tenantId, type, data }: { tenantId: string; type: string; data: Record<string, any> }) =>
+        events.push({ tenantId, type, data }),
       start: () => undefined,
       stop: async () => undefined,
     } as unknown as WebhookDispatcher;

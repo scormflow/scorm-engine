@@ -41,6 +41,9 @@ services:
       STORAGE_DRIVER: local
       STORAGE_LOCAL_DIR: /data/storage
       REDIS_URL: redis://redis:6379
+      # Set to `redis` to carry engine events over the bundled Redis (needed
+      # once you run more than one engine replica).
+      EVENT_BUS_DRIVER: ${EVENT_BUS_DRIVER:-memory}
     ports:
       - "3000:3000"
     volumes:

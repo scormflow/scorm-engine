@@ -59,6 +59,23 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ ...baseEnv, CERTIFICATE_ACCENT_COLOR: 'navy' })).toThrow(/CERTIFICATE_ACCENT_COLOR/);
   });
 
+  it('defaults the event bus to memory and requires REDIS_URL for the redis driver', () => {
+    const env = loadEnv({ ...baseEnv, REDIS_URL: '' });
+    expect(env.EVENT_BUS_DRIVER).toBe('memory');
+    expect(env.EVENT_BUS_STREAM).toBe('scormflow:events');
+    expect(env.EVENT_BUS_GROUP).toBe('scormflow');
+    expect(env.EVENT_BUS_MAX_LENGTH).toBe(100_000);
+    expect(env.EVENT_STREAM_HEARTBEAT_SECONDS).toBe(15);
+    expect(env.REDIS_URL).toBeUndefined();
+    resetEnvForTests();
+    expect(() => loadEnv({ ...baseEnv, EVENT_BUS_DRIVER: 'redis' })).toThrow(/REDIS_URL is required/);
+    resetEnvForTests();
+    expect(loadEnv({ ...baseEnv, EVENT_BUS_DRIVER: 'redis', REDIS_URL: 'redis://localhost:6379' }).EVENT_BUS_DRIVER)
+      .toBe('redis');
+    resetEnvForTests();
+    expect(() => loadEnv({ ...baseEnv, EVENT_BUS_DRIVER: 'kafka' })).toThrow(/EVENT_BUS_DRIVER/);
+  });
+
   it('caches the parsed env across calls', () => {
     const a = loadEnv(baseEnv);
     const b = loadEnv({ ...baseEnv, PORT: '9999' });

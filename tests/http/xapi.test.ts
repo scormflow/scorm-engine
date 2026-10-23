@@ -122,7 +122,8 @@ describe('POST /xapi/statements', () => {
   it('publishes xapi.statement.stored to the webhook sink', async () => {
     const events: Array<{ tenantId: string; type: string; data: Record<string, any> }> = [];
     const spy = {
-      emit: (tenantId: string, type: string, data: Record<string, any>) => events.push({ tenantId, type, data }),
+      enqueue: async ({ tenantId, type, data }: { tenantId: string; type: string; data: Record<string, any> }) =>
+        events.push({ tenantId, type, data }),
       start: () => undefined,
       stop: async () => undefined,
     } as unknown as WebhookDispatcher;

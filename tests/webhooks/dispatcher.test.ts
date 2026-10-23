@@ -153,6 +153,41 @@ describe('WebhookDispatcher', () => {
     expect(t.lrs.webhooks.deliveries[0]!.status).toBe('SUCCEEDED');
   });
 
+  it('enqueue keeps the bus event id, attempts in the background, and never double-queues a redelivery', async () => {
+    const t = setup();
+    await t.endpoint();
+    await t.endpoint({ events: ['*'] });
+    await t.endpoint({ events: ['score.updated'] });
+    const event = {
+      id: 'evt_bus-1',
+      tenantId: TENANT,
+      type: 'course.completed' as const,
+      createdAt: '2026-10-13T09:00:00.000Z',
+      data: { attemptId: 'a1' },
+    };
+
+    const ids = await t.dispatcher.enqueue(event);
+    expect(ids).toHaveLength(2);
+    await t.dispatcher.idle();
+    expect(t.fetchMock).toHaveBeenCalledTimes(2);
+    for (const req of t.requests) {
+      expect(JSON.parse(req.init.body as string)).toEqual({
+        id: 'evt_bus-1',
+        type: 'course.completed',
+        createdAt: '2026-10-13T09:00:00.000Z',
+        data: { attemptId: 'a1' },
+      });
+    }
+
+    // A transport retry of the same event, after one more endpoint subscribed.
+    const late = await t.endpoint({ events: ['*'] });
+    const again = await t.dispatcher.enqueue(event);
+    await t.dispatcher.idle();
+    expect(again).toHaveLength(1);
+    expect(t.lrs.webhooks.deliveries.filter((d) => d.eventId === 'evt_bus-1')).toHaveLength(3);
+    expect(t.lrs.webhooks.deliveries.at(-1)!.endpointId).toBe(late.id);
+  });
+
   it('caps the backoff at six hours', () => {
     const { dispatcher } = setup();
     expect(dispatcher.backoffSeconds(1)).toBe(30);
