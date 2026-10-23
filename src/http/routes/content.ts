@@ -4,6 +4,7 @@ import type { PrismaClient } from '../../db/client.js';
 import { isTenantKey } from '../../storage/scoped.js';
 import { type StorageAdapter, StorageNotFoundError } from '../../storage/types.js';
 import { extractToken } from '../../auth/attempt-token.js';
+import { attemptCookie, isSecureRequest } from '../launch.js';
 
 export interface ContentRouteDeps {
   prisma: PrismaClient;
@@ -23,7 +24,7 @@ export function contentRoutes(deps: ContentRouteDeps): FastifyPluginAsync {
   const { prisma, storage } = deps;
 
   return async function (app: FastifyInstance): Promise<void> {
-    app.get<{ Params: { courseId: string; '*': string }; Querystring: { version?: string } }>(
+    app.get<{ Params: { courseId: string; '*': string }; Querystring: { version?: string; token?: string } }>(
       '/courses/:courseId/content/*',
       async (req, reply) => {
         const { courseId } = req.params;
@@ -69,6 +70,11 @@ export function contentRoutes(deps: ContentRouteDeps): FastifyPluginAsync {
         const key = `${storageKey}/${relPath}`;
         try {
           const stream = await storage.get(key);
+          // A launch URL carries its token in `?token=`; hand it on as the cookie
+          // so the SCO's relative sub-resource requests authenticate too.
+          if (access.attempt && typeof req.query.token === 'string' && req.query.token) {
+            reply.header('Set-Cookie', attemptCookie(req.query.token, isSecureRequest(req)));
+          }
           reply.header('Cache-Control', 'private, max-age=300');
           reply.type(contentTypeFor(relPath));
           return reply.send(stream);

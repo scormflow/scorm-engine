@@ -59,6 +59,7 @@ POST   /api/v1/courses/validate               Validate a package without registe
 GET    /api/v1/courses                        List courses for the tenant
 GET    /api/v1/courses/:id                    Course metadata + SCO tree
 GET    /api/v1/courses/:id/content/*          Stream an extracted package file (attempt tokens get their pinned release)
+GET    /api/v1/courses/:id/launch-url         Signed iframe URL to an attempt's SCO (?attemptId=&scoId=)
 
 GET    /api/v1/courses/:id/versions           Releases, newest first (the course changelog)
 POST   /api/v1/courses/:id/versions           Publish a new release (multipart; label / bump / releaseNotes / activate)
@@ -228,6 +229,19 @@ then terminates, the commit returns `suspended: true` and the attempt stays
 finalizes the attempt, and the next start opens a new one. The `/play` page
 seeds `entry` and the learner id / name, so content can tell a resume from a
 first launch.
+
+### Multi-SCO courses
+
+`scoId` is a SCO's manifest `identifier` everywhere it is public — the course's
+`scos[].identifier` / `primaryScoId`, the `scoId` of `POST /courses/:id/attempts`,
+`/play?scoId=`, `launch-url?scoId=` and the `scoId` in attempt events. Attempts
+resume per SCO, and an unknown SCO is a 404 `sco_not_found`. (A SCO row `id` is
+also accepted when starting an attempt.)
+
+`GET /courses/:id/launch-url?attemptId=…` returns `{ launchUrl, token, expiresAt,
+scoId }` for an SDK player iframe. The token rides in `?token=`; the content
+route turns it into the `sf_attempt` cookie for the SCO's relative assets
+(`SameSite=None; Secure; Partitioned` over HTTPS, so cross-site embeds work).
 
 ### cmi5
 

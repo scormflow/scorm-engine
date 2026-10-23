@@ -10,6 +10,7 @@
 export {
   applyCommit,
   AttemptServiceError,
+  findSco,
   getRuntimeState,
   recordCommit,
   SPEC_VERSION,

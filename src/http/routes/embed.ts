@@ -3,8 +3,8 @@ import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { PrismaClient } from '../../db/client.js';
 import type { Env } from '../../config/env.js';
 import { getRuntimeState, type RuntimeState } from '../../tracking/index.js';
-import { manifestScos } from '../../versioning/service.js';
-import { ATTEMPT_COOKIE, type AttemptTokenPayload } from '../../auth/attempt-token.js';
+import type { AttemptTokenPayload } from '../../auth/attempt-token.js';
+import { attemptCookie, isSecureRequest, LAUNCH_ATTEMPT_SELECT, resolveLaunch } from '../launch.js';
 import {
   renderBridgeConfig,
   renderPlayerPage,
@@ -21,6 +21,12 @@ export interface EmbedRouteDeps {
 interface TokenBody {
   attemptId?: string;
   ttlSeconds?: number;
+}
+
+interface LaunchUrlQuery {
+  attemptId?: string;
+  scoId?: string;
+  ttlSeconds?: string;
 }
 
 type ContentSource = 'engine' | 'external';
@@ -88,6 +94,40 @@ export function embedRoutes(deps: EmbedRouteDeps): FastifyPluginAsync {
       },
     );
 
+    // Signed, iframe-ready URL to an attempt's SCO entry point (API-key protected).
+    // Content needs an attempt token to load, so the URL is always attempt-scoped.
+    app.get<{ Params: { courseId: string }; Querystring: LaunchUrlQuery }>(
+      '/courses/:courseId/launch-url',
+      { preHandler: app.requireApiKey },
+      async (req, reply) => {
+        const attemptId = req.query.attemptId?.trim();
+        if (!attemptId) {
+          return reply.code(400).send({ code: 'invalid_request', message: 'attemptId is required' });
+        }
+        const attempt = await prisma.attempt.findFirst({
+          where: { id: attemptId, tenantId: req.tenantId, courseId: req.params.courseId },
+          select: LAUNCH_ATTEMPT_SELECT,
+        });
+        if (!attempt) {
+          return reply.code(404).send({ code: 'attempt_not_found', message: 'Attempt not found for this course' });
+        }
+        const launch = await resolveLaunch(prisma, attempt, req.query.scoId?.trim() || undefined);
+        if (!launch) {
+          return reply.code(404).send({ code: 'sco_not_found', message: 'SCO not found in this course' });
+        }
+        const ttlParam = req.query.ttlSeconds === undefined ? undefined : Number(req.query.ttlSeconds);
+        const ttl = clampTtl(ttlParam, env.JWT_ATTEMPT_TTL_SECONDS);
+        const { token, expiresAt } = app.signAttemptToken(attemptId, req.tenantId, ttl);
+        const origin = baseUrl(req).replace(/\/api\/v1$/, '');
+        return {
+          launchUrl: `${origin}${launch.path}?token=${encodeURIComponent(token)}`,
+          token,
+          expiresAt,
+          scoId: launch.scoId,
+        };
+      },
+    );
+
     // Standalone runtime bridge. Without attemptId + token it is a static,
     // cacheable script configured by the host page's window.__SCORMFLOW__;
     // with them it is prefixed with that config, hydrated from the attempt, so a
@@ -125,7 +165,10 @@ export function embedRoutes(deps: EmbedRouteDeps): FastifyPluginAsync {
         const { payload, state, token } = access;
 
         const source: ContentSource = req.query.source === 'external' ? 'external' : 'engine';
-        const contentUrl = await resolveContentUrl(source, req.query, payload, prisma);
+        const contentUrl = await resolveContentUrl(source, req.query, payload);
+        if (contentUrl === SCO_NOT_FOUND) {
+          return reply.code(404).send({ code: 'sco_not_found', message: 'SCO not found in this course' });
+        }
         if (!contentUrl) {
           return reply.code(400).send({
             code: 'no_content',
@@ -139,10 +182,7 @@ export function embedRoutes(deps: EmbedRouteDeps): FastifyPluginAsync {
         const apiBase = baseUrl(req);
         // Cookie lets the SCO's relative sub-resource requests authenticate.
         if (source === 'engine') {
-          reply.header(
-            'Set-Cookie',
-            `${ATTEMPT_COOKIE}=${encodeURIComponent(token)}; Path=/api/v1/courses; HttpOnly; SameSite=Lax`,
-          );
+          reply.header('Set-Cookie', attemptCookie(token, isSecureRequest(req)));
         }
         reply.type('text/html; charset=utf-8');
         return renderPlayerPage({
@@ -190,44 +230,22 @@ export function embedRoutes(deps: EmbedRouteDeps): FastifyPluginAsync {
     source: ContentSource,
     query: PlayQuery,
     payload: { attemptId: string; tenantId: string; scoId?: string },
-    prisma: PrismaClient,
-  ): Promise<string | null> {
+  ): Promise<string | typeof SCO_NOT_FOUND | null> {
     if (source === 'external') {
       return query.src && /^https?:\/\//.test(query.src) ? query.src : null;
     }
     // Engine-hosted: resolve the SCO's launch href within the course content path.
     const attempt = await prisma.attempt.findFirst({
       where: { id: payload.attemptId, tenantId: payload.tenantId },
-      select: {
-        courseId: true,
-        scoId: true,
-        course: { select: { launchUrl: true, storageKey: true } },
-        courseVersion: { select: { launchUrl: true, storageKey: true, manifest: true } },
-      },
+      select: LAUNCH_ATTEMPT_SELECT,
     });
     if (!attempt) return null;
-    // An attempt pinned to a release launches from that release, not the live one.
-    const release = attempt.courseVersion ?? attempt.course;
-
-    const scoId = query.scoId ?? payload.scoId ?? attempt.scoId ?? undefined;
-    let launchHref: string | undefined;
-    if (scoId && attempt.courseVersion) {
-      launchHref = manifestScos(attempt.courseVersion.manifest).find((s) => s.identifier === scoId)?.launchHref || undefined;
-    } else if (scoId) {
-      const sco = await prisma.sco.findFirst({
-        where: { courseId: attempt.courseId, identifier: scoId },
-        select: { launchHref: true },
-      });
-      launchHref = sco?.launchHref;
-    }
-    // Fall back to the release's primary launch URL (storageKey-relative).
-    if (!launchHref) {
-      const prefix = `${release.storageKey}/`;
-      launchHref = release.launchUrl.startsWith(prefix) ? release.launchUrl.slice(prefix.length) : release.launchUrl;
-    }
-    return `/api/v1/courses/${encodeURIComponent(attempt.courseId)}/content/${launchHref}`;
+    const launch = await resolveLaunch(prisma, attempt, query.scoId ?? payload.scoId);
+    return launch ? launch.path : SCO_NOT_FOUND;
   }
 }
+
+const SCO_NOT_FOUND = Symbol('sco_not_found');
 
 /**
  * The bridge answers GetValue from the seeded CMI alone, so fold in the

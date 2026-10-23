@@ -252,7 +252,10 @@ paths:
         - name: scoId
           in: query
           schema: { type: string }
-          description: Optional — override the default SCO (engine source only).
+          description: |
+            Optional — override the attempt's SCO by manifest `identifier`
+            (engine source only). Defaults to the SCO the attempt was started
+            on, then the release's primary entry.
         - $ref: '#/components/parameters/ReplayCapture'
         - $ref: '#/components/parameters/ReplayPointer'
       responses:
@@ -270,6 +273,11 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '403':
           description: Token is not valid for this attempt.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Attempt not found, or `scoId` is not a SCO of this course (`sco_not_found`).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -500,15 +508,36 @@ paths:
       - $ref: '#/components/parameters/CourseId'
     get:
       tags: [Courses]
-      summary: Get a signed launch URL for the course's primary SCO
+      summary: Get a signed launch URL for an attempt's SCO
       description: |
-        Returns a short-lived URL pointing at the SCO entry point on the engine's
-        static asset host. The player loads this in an iframe.
+        Returns a short-lived URL to the SCO entry point of an attempt's release
+        on the engine's content route, for the SDK player to load in an iframe.
+        The URL carries a fresh attempt token in `?token=`; the content route
+        answers it with the `sf_attempt` cookie so the SCO's relative
+        sub-resource requests authenticate. Over HTTPS that cookie is
+        `SameSite=None; Secure; Partitioned`, so it also works when the iframe is
+        embedded on another site.
+
+        Content is only readable with an attempt token, so a launch URL is
+        always attempt-scoped: start the attempt first, then ask for its URL.
+        The returned `token` is the same one in the URL and also authenticates
+        the runtime calls (`/attempts/{attemptId}/commit`, …).
       parameters:
+        - name: attemptId
+          in: query
+          required: true
+          schema: { type: string }
+          description: Attempt on this course to launch.
         - name: scoId
           in: query
           schema: { type: string }
-          description: Optional — defaults to the manifest's primary SCO.
+          description: |
+            Optional SCO override by manifest `identifier`. Defaults to the SCO
+            the attempt was started on, then the release's primary entry.
+        - name: ttlSeconds
+          in: query
+          schema: { type: integer, minimum: 60, maximum: 86400 }
+          description: Token lifetime; defaults to `JWT_ATTEMPT_TTL_SECONDS`.
       responses:
         '200':
           description: Launch URL
@@ -516,9 +545,24 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [launchUrl, token, expiresAt, scoId]
                 properties:
                   launchUrl: { type: string, format: uri }
+                  token:
+                    type: string
+                    description: The attempt token embedded in `launchUrl`.
                   expiresAt: { type: string, format: date-time }
+                  scoId:
+                    type: string
+                    nullable: true
+                    description: Manifest identifier of the launched SCO; null for the primary entry.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such attempt on this course, or unknown `scoId` (`sco_not_found`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /courses/{courseId}/content/{path}:
     parameters:
@@ -799,7 +843,11 @@ paths:
                   description: Optional display name passed to the SCO as `student_name`.
                 scoId:
                   type: string
-                  description: Target SCO; defaults to the course's primary SCO.
+                  description: |
+                    Target SCO by manifest `identifier` (as in `Course.scos[].identifier`
+                    and `primaryScoId`); a SCO `id` is accepted too. Defaults to the
+                    course's primary entry. Open attempts resume per SCO. An unknown
+                    SCO is a 404 `sco_not_found`.
                 mode:
                   type: string
                   enum: [normal, browse, review]
