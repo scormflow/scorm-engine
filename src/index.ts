@@ -26,6 +26,14 @@ export {
   validatePackage,
   CourseServiceError,
 } from './services/courses.js';
+export { createCourseVersionService, CourseVersionError, diffVersions } from './versioning/index.js';
+export type {
+  AssetDiff,
+  CourseVersionService,
+  CourseVersionView,
+  PublishVersionInput,
+  VersionDiff,
+} from './versioning/index.js';
 export { formatReport, validateScormPackage } from './validator/index.js';
 export type {
   IssueCategory,

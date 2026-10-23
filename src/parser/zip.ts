@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 
 import yauzl, { type Entry, type ZipFile } from 'yauzl';
 
@@ -19,6 +20,8 @@ export interface ExtractedFile {
   /** Path relative to the zip root, normalized with forward slashes. */
   path: string;
   sizeBytes: number;
+  /** Hex SHA-256 of the file contents (computed while streaming to storage). */
+  sha256: string;
 }
 
 export interface ZipExtractionResult {
@@ -90,11 +93,11 @@ export async function extractZipToStorage(
             );
           }
 
-          const stream = await openReadStream(zipfile, entry);
+          const hashed = hashingStream(await openReadStream(zipfile, entry));
           const storageKey = joinKey(prefix, safePath);
-          await storage.put(storageKey, stream);
+          await storage.put(storageKey, hashed.stream);
 
-          files.push({ path: safePath, sizeBytes: entry.uncompressedSize });
+          files.push({ path: safePath, sizeBytes: entry.uncompressedSize, sha256: hashed.digest() });
           totalBytes += entry.uncompressedSize;
           zipfile.readEntry();
         };
@@ -275,9 +278,9 @@ export async function extractZipToDisk(
           }
           const target = path.join(targetDir, safePath);
           await mkdir(path.dirname(target), { recursive: true });
-          const stream = await openReadStream(zipfile, entry);
-          await pipeline(stream, createWriteStream(target));
-          files.push({ path: safePath, sizeBytes: entry.uncompressedSize });
+          const hashed = hashingStream(await openReadStream(zipfile, entry));
+          await pipeline(hashed.stream, createWriteStream(target));
+          files.push({ path: safePath, sizeBytes: entry.uncompressedSize, sha256: hashed.digest() });
           totalBytes += entry.uncompressedSize;
           zipfile.readEntry();
         };
@@ -329,6 +332,24 @@ function sanitizeEntryPath(rawFileName: string): string | null {
     if (segment === '..' || segment === '') return null;
   }
   return segments.join('/');
+}
+
+/**
+ * Pass `source` through a SHA-256 tap. `digest()` is valid once the returned
+ * stream has been fully consumed; a source error destroys it so the consumer
+ * fails instead of hanging.
+ */
+function hashingStream(source: Readable): { stream: Readable; digest: () => string } {
+  const hash = createHash('sha256');
+  const stream = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+  source.on('error', (err) => stream.destroy(err));
+  source.pipe(stream);
+  return { stream, digest: () => hash.digest('hex') };
 }
 
 function joinKey(prefix: string, suffix: string): string {
