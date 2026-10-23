@@ -130,6 +130,17 @@ tags:
       title and score are snapshotted at issue time; the PDF is rendered on
       demand. Each certificate carries a public serial (`XXXX-XXXX-XXXX`) that
       anyone can check at `GET /certificates/verify/{serial}`.
+  - name: AI
+    description: |
+      AI analytics with your own provider and key (OpenAI, Anthropic, Gemini,
+      Mistral, Ollama or any OpenAI-compatible endpoint). Mounted only when the
+      engine has an `AI_MASTER_KEY`. Provider keys are write-only and stored
+      encrypted per tenant. Insights are generated from aggregates over the
+      most recent 500 attempts — never learner ids or names — and the prompt
+      goes through a PII redaction pass unless the config turns it off. Every
+      call is logged (prompt SHA-256, provider, model, tokens, cost); each
+      config can carry a monthly token cap with an alert threshold
+      (`ai.budget.alert`) and a kill-switch (`enabled`).
   - name: Auth
     description: Token issuance for player sessions.
   - name: System
@@ -1972,6 +1983,189 @@ paths:
         '200': { $ref: '#/components/responses/CertificatePdf' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /ai/providers:
+    get:
+      tags: [AI]
+      summary: List the tenant's AI provider configs
+      responses:
+        '200':
+          description: Configs (keys are never returned)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AiProviderConfig' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /ai/providers/test:
+    post:
+      tags: [AI]
+      summary: Check a provider, model and key without storing them
+      description: Sends a tiny completion with the given key. Nothing is stored or logged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AiProviderTestRequest' }
+      responses:
+        '200':
+          description: The outcome; `ok` is false (with `error`) when the provider refused or failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AiProviderTestResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /ai/providers/{feature}:
+    parameters:
+      - name: feature
+        in: path
+        required: true
+        description: The feature the config serves; `default` serves any feature without its own.
+        schema: { $ref: '#/components/schemas/AiFeature' }
+    get:
+      tags: [AI]
+      summary: Get one AI provider config
+      responses:
+        '200':
+          description: Config
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AiProviderConfig' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [AI]
+      summary: Create or replace an AI provider config
+      description: |
+        Replaces the whole config. Omit `apiKey` to keep the stored key (only
+        while the provider stays the same); send `null` to remove it. The key
+        is encrypted at rest and never returned — responses carry `keyHint`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AiProviderConfigInput' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AiProviderConfig' }
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AiProviderConfig' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [AI]
+      summary: Delete an AI provider config
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /ai/insights:
+    post:
+      tags: [AI]
+      summary: Generate insights, a summary or recommendations
+      description: |
+        Builds an aggregate view of the most recent attempts (one course, or
+        the whole tenant) — outcome rates, where unfinished attempts stopped,
+        most-failed objectives, most-missed questions — and asks the
+        configured model about it. Uses the `kind`'s own config, else `default`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AiInsightRequest' }
+      responses:
+        '200':
+          description: The model's answer, with usage
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AiInsight' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No config for this kind (`ai_not_configured`) or unknown course (`course_not_found`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The config is switched off (`ai_disabled`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: The config's monthly token cap is used up (`ai_budget_exceeded`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: The provider failed (`ai_provider_error`), refused the key (`ai_provider_auth`) or was unreachable (`ai_provider_unreachable`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /ai/usage:
+    get:
+      tags: [AI]
+      summary: This month's token usage and cost per config
+      responses:
+        '200':
+          description: Usage for the current calendar month (UTC)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [month, data]
+                properties:
+                  month: { type: string, description: '`YYYY-MM`', example: '2026-10' }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AiUsage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /ai/calls:
+    get:
+      tags: [AI]
+      summary: The AI call audit log, newest first
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 50 }
+        - name: before
+          in: query
+          description: The previous page's `nextCursor`.
+          schema: { type: string, format: date-time }
+        - name: format
+          in: query
+          description: '`csv` to download the page as CSV (next cursor in `X-Next-Cursor`).'
+          schema: { type: string, enum: [json, csv], default: json }
+      responses:
+        '200':
+          description: Calls
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AiCall' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+            text/csv:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
 components:
   # ───────────────────────────────────────────────────────────────────────
   # Security
@@ -2894,6 +3088,7 @@ components:
         - cmi5.block.satisfied
         - cmi5.course.satisfied
         - xapi.statement.stored
+        - ai.budget.alert
         - webhook.test
 
     WebhookEndpoint:
@@ -3282,3 +3477,198 @@ components:
           enum: ['1', '2', '3']
           description: '`1` already redeemed, `2` invalid or expired, `3` general error.'
         error-text: { type: string }
+
+    # ── AI analytics ─────────────────────────────────────────────────────
+    AiProvider:
+      type: string
+      enum: [openai, anthropic, gemini, mistral, ollama, openai_compatible]
+
+    AiFeature:
+      type: string
+      enum: [default, insights, summary, recommendations]
+
+    AiInsightKind:
+      type: string
+      enum: [insights, summary, recommendations]
+
+    AiProviderConfig:
+      type: object
+      required:
+        - feature
+        - provider
+        - model
+        - baseUrl
+        - hasKey
+        - keyHint
+        - redactPii
+        - enabled
+        - monthlyTokenCap
+        - alertThreshold
+        - inputCostPerMTok
+        - outputCostPerMTok
+        - createdAt
+        - updatedAt
+      properties:
+        feature: { $ref: '#/components/schemas/AiFeature' }
+        provider: { $ref: '#/components/schemas/AiProvider' }
+        model: { type: string, example: claude-sonnet-5-5 }
+        baseUrl: { type: [string, 'null'], description: Overrides the provider's API base. }
+        hasKey: { type: boolean }
+        keyHint: { type: [string, 'null'], description: 'The key''s last four characters, e.g. `…9f3a`.' }
+        redactPii: { type: boolean, description: Run the PII redaction pass before sending prompts. }
+        enabled: { type: boolean, description: Kill-switch; when false, calls answer 409. }
+        monthlyTokenCap:
+          type: [integer, 'null']
+          description: Input + output tokens allowed per calendar month (UTC); null for no cap.
+        alertThreshold:
+          type: number
+          description: Fraction of the cap at which `ai.budget.alert` fires.
+        inputCostPerMTok: { type: [number, 'null'], description: USD per million input tokens, for cost reporting. }
+        outputCostPerMTok: { type: [number, 'null'], description: USD per million output tokens. }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    AiProviderConfigInput:
+      type: object
+      required: [provider, model]
+      properties:
+        provider: { $ref: '#/components/schemas/AiProvider' }
+        model: { type: string, maxLength: 200 }
+        apiKey:
+          type: [string, 'null']
+          maxLength: 1000
+          description: Required for openai, anthropic, gemini and mistral. Omit to keep the stored key; null removes it.
+        baseUrl:
+          type: [string, 'null']
+          description: Required for `openai_compatible`. Private addresses need `AI_ALLOW_PRIVATE_URLS`.
+        redactPii: { type: boolean, default: true }
+        enabled: { type: boolean, default: true }
+        monthlyTokenCap: { type: [integer, 'null'], minimum: 1 }
+        alertThreshold: { type: number, minimum: 0.01, maximum: 1, default: 0.8 }
+        inputCostPerMTok: { type: [number, 'null'], minimum: 0 }
+        outputCostPerMTok: { type: [number, 'null'], minimum: 0 }
+
+    AiProviderTestRequest:
+      type: object
+      required: [provider, model]
+      properties:
+        provider: { $ref: '#/components/schemas/AiProvider' }
+        model: { type: string }
+        apiKey: { type: [string, 'null'] }
+        baseUrl: { type: [string, 'null'] }
+
+    AiProviderTestResult:
+      type: object
+      required: [ok, provider, model, latencyMs]
+      properties:
+        ok: { type: boolean }
+        provider: { $ref: '#/components/schemas/AiProvider' }
+        model: { type: string }
+        latencyMs: { type: integer }
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [ai_provider_auth, ai_provider_error, ai_provider_unreachable] }
+            message: { type: string }
+
+    AiInsightRequest:
+      type: object
+      properties:
+        kind: { $ref: '#/components/schemas/AiInsightKind' }
+        courseId:
+          type: string
+          description: Limit the analysis to one course; omit for the whole tenant.
+        question:
+          type: string
+          maxLength: 500
+          description: An extra question for the model, answered alongside the task.
+
+    AiInsight:
+      type: object
+      required: [id, kind, scope, courseId, feature, provider, model, text, usage, redactions, sample, generatedAt]
+      properties:
+        id: { type: string, description: The call log entry for this answer. }
+        kind: { $ref: '#/components/schemas/AiInsightKind' }
+        scope: { type: string, enum: [course, tenant] }
+        courseId: { type: [string, 'null'] }
+        feature: { $ref: '#/components/schemas/AiFeature' }
+        provider: { $ref: '#/components/schemas/AiProvider' }
+        model: { type: string }
+        text: { type: string, description: The model's answer, in Markdown. }
+        usage:
+          type: object
+          required: [inputTokens, outputTokens, totalTokens, costUsd]
+          properties:
+            inputTokens: { type: integer }
+            outputTokens: { type: integer }
+            totalTokens: { type: integer }
+            costUsd: { type: [number, 'null'] }
+        redactions:
+          type: object
+          required: [count, counts]
+          properties:
+            count: { type: integer }
+            counts:
+              type: object
+              description: Replacements by kind (email, card, ssn, ip, phone).
+              additionalProperties: { type: integer }
+        sample:
+          type: object
+          required: [attempts, truncated, from, to]
+          properties:
+            attempts: { type: integer }
+            truncated: { type: boolean, description: More attempts exist than the 500 analysed. }
+            from: { type: [string, 'null'], format: date-time }
+            to: { type: [string, 'null'], format: date-time }
+        generatedAt: { type: string, format: date-time }
+
+    AiUsage:
+      type: object
+      required: [feature, provider, model, calls, tokensUsed, costUsd, monthlyTokenCap, alertThreshold, alerting, exhausted]
+      properties:
+        feature: { $ref: '#/components/schemas/AiFeature' }
+        provider: { $ref: '#/components/schemas/AiProvider' }
+        model: { type: string }
+        calls: { type: integer, description: Successful calls this month. }
+        tokensUsed: { type: integer }
+        costUsd: { type: [number, 'null'] }
+        monthlyTokenCap: { type: [integer, 'null'] }
+        alertThreshold: { type: number }
+        alerting: { type: boolean }
+        exhausted: { type: boolean }
+
+    AiCall:
+      type: object
+      required:
+        - id
+        - feature
+        - kind
+        - provider
+        - model
+        - courseId
+        - status
+        - promptHash
+        - inputTokens
+        - outputTokens
+        - costUsd
+        - redactions
+        - latencyMs
+        - error
+        - createdAt
+      properties:
+        id: { type: string }
+        feature: { type: string }
+        kind: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        courseId: { type: [string, 'null'] }
+        status: { type: string, enum: [succeeded, failed, blocked] }
+        promptHash: { type: string, description: SHA-256 of the system and user prompt as sent. }
+        inputTokens: { type: integer }
+        outputTokens: { type: integer }
+        costUsd: { type: [number, 'null'] }
+        redactions: { type: integer }
+        latencyMs: { type: integer }
+        error: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }

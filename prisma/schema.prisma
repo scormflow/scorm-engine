@@ -26,6 +26,8 @@ model Tenant {
   webhookEndpoints  WebhookEndpoint[]
   webhookDeliveries WebhookDelivery[]
   certificates      Certificate[]
+  aiConfigs         AiProviderConfig[]
+  aiCalls           AiCallLog[]
 }
 
 model ApiKey {
@@ -554,4 +556,72 @@ model WebhookDelivery {
 
   @@index([status, nextAttemptAt])
   @@index([endpointId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// AI analytics (bring your own provider + key)
+// ---------------------------------------------------------------------------
+
+/// A tenant's AI provider settings for one feature (`insights`, `summary`,
+/// `recommendations`) or `default`, used by features without their own.
+model AiProviderConfig {
+  id           String  @id @default(cuid())
+  tenantId     String
+  feature      String
+  /// openai | anthropic | gemini | mistral | ollama | openai_compatible
+  provider     String
+  model        String
+  baseUrl      String?
+  /// The provider key, AES-256-GCM under a random data key (`v1.<iv>.<tag>.<ct>`).
+  encryptedKey String?
+  /// That data key, wrapped by the tenant key derived from AI_MASTER_KEY.
+  wrappedKey   String?
+  /// Last four characters of the key, for display.
+  keyHint      String?
+  redactPii    Boolean @default(true)
+  /// Kill-switch: when false, calls are refused.
+  enabled      Boolean @default(true)
+  /// Input + output tokens allowed per calendar month (UTC); null = unlimited.
+  monthlyTokenCap   Int?
+  /// Fraction of the cap at which `ai.budget.alert` fires.
+  alertThreshold    Float    @default(0.8)
+  /// USD per million tokens, set by the tenant, for cost reporting.
+  inputCostPerMTok  Float?
+  outputCostPerMTok Float?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  calls  AiCallLog[]
+
+  @@unique([tenantId, feature])
+}
+
+/// Audit log of every AI call: what was asked of which provider, what it cost.
+/// The prompt itself is not stored, only its SHA-256.
+model AiCallLog {
+  id           String   @id @default(cuid())
+  tenantId     String
+  configId     String?
+  feature      String
+  kind         String
+  provider     String
+  model        String
+  courseId     String?
+  /// succeeded | failed | blocked (over budget)
+  status       String
+  promptHash   String
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  costUsd      Float?
+  redactions   Int      @default(0)
+  latencyMs    Int      @default(0)
+  error        String?
+  createdAt    DateTime @default(now())
+
+  tenant Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  config AiProviderConfig? @relation(fields: [configId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([configId, createdAt])
 }

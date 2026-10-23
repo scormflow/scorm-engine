@@ -21,6 +21,8 @@ export interface MemoryDb {
     interactions: Row[];
     commitLogs: Row[];
     certificates: Row[];
+    aiConfigs: Row[];
+    aiCalls: Row[];
   };
 }
 
@@ -41,6 +43,8 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
     interactions: [],
     commitLogs: [],
     certificates: [],
+    aiConfigs: [],
+    aiCalls: [],
   };
 
   // Relations each model can expand through select/include.
@@ -105,6 +109,21 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
           .slice(0, args.take ?? undefined)
           .map((r) => project(model, r, args)),
       count: async (args: any = {}) => filter(args.where).length,
+      aggregate: async (args: any = {}) => {
+        const found = filter(args.where);
+        const out: Row = {};
+        for (const op of ['_sum', '_avg'] as const) {
+          if (!args[op]) continue;
+          out[op] = {};
+          for (const field of Object.keys(args[op])) {
+            const values = found.map((r) => r[field]).filter((v) => v != null) as number[];
+            const sum = values.reduce((s, v) => s + v, 0);
+            out[op][field] = values.length === 0 ? null : op === '_sum' ? sum : sum / values.length;
+          }
+        }
+        if (args._count) out._count = { _all: found.length };
+        return out;
+      },
       create: async (args: any) => {
         const { nested, data } = splitNested(args.data);
         const row = { ...defaults(data), ...data };
@@ -215,6 +234,12 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
       revokedAt: null,
       revokedReason: null,
     })),
+    aiProviderConfig: table('aiProviderConfig', tables.aiConfigs, () => ({
+      id: randomUUID(),
+      createdAt: now(),
+      updatedAt: now(),
+    })),
+    aiCallLog: table('aiCallLog', tables.aiCalls, () => ({ id: randomUUID(), createdAt: now() })),
   };
   client.$transaction = async (fn: (tx: unknown) => unknown) => fn(client);
 
@@ -230,7 +255,10 @@ function matches(row: Row, where: Row): boolean {
       if ('in' in cond && !cond.in.includes(value)) return false;
       if ('not' in cond && (value ?? null) === cond.not) return false;
       if ('lt' in cond && !(value < cond.lt)) return false;
-      if (!('in' in cond) && !('not' in cond) && !('lt' in cond) && !matches(row, cond)) return false;
+      if ('gte' in cond && !(value >= cond.gte)) return false;
+      if (!('in' in cond) && !('not' in cond) && !('lt' in cond) && !('gte' in cond) && !matches(row, cond)) {
+        return false;
+      }
       continue;
     }
     if (value !== cond && !(cond === null && value === undefined)) return false;

@@ -21,6 +21,8 @@ import { cmi5Routes } from './routes/cmi5.js';
 import { webhookRoutes } from './routes/webhooks.js';
 import { certificateRoutes } from './routes/certificates.js';
 import { CertificateIssuer } from '../certificates/index.js';
+import { AiService, KeyVault, parseMasterKey } from '../ai/index.js';
+import { aiRoutes } from './routes/ai.js';
 import { WebhookDispatcher } from '../webhooks/index.js';
 import { createEventBus, type EventBus } from '../events/index.js';
 import { eventRoutes } from './routes/events.js';
@@ -62,6 +64,8 @@ export interface AppDeps {
    * omitted, the built-ins named by `PLUGINS` are installed; pass `[]` for none.
    */
   plugins?: readonly ScormflowPlugin[];
+  /** `fetch` used for AI provider calls (a stub in tests); the global one otherwise. */
+  aiFetch?: typeof fetch;
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
@@ -127,6 +131,18 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       )
     : undefined;
 
+  const ai = env.AI_MASTER_KEY
+    ? new AiService({
+        prisma,
+        vault: new KeyVault(parseMasterKey(env.AI_MASTER_KEY)),
+        events,
+        allowPrivateUrls: env.AI_ALLOW_PRIVATE_URLS,
+        timeoutMs: env.AI_TIMEOUT_MS,
+        maxOutputTokens: env.AI_MAX_OUTPUT_TOKENS,
+        fetch: deps.aiFetch,
+      })
+    : undefined;
+
   // Plugins see the same bus, database and storage the built-in routes do.
   const plugins = await installPlugins(app, deps.plugins ?? pluginsFromEnv(env), { env, prisma, storage, events });
   app.addHook('onClose', async () => {
@@ -149,6 +165,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       );
       if (certificates) await api.register(certificateRoutes({ certificates }));
       await api.register(analyticsRoutes({ prisma }), { prefix: '/analytics' });
+      if (ai) await api.register(aiRoutes({ ai }), { prefix: '/ai' });
       await api.register(embedRoutes({ prisma, env }));
       await api.register(xapiRoutes({ prisma, storage, env, events }), { prefix: '/xapi' });
       await api.register(cmi5Routes({ prisma, storage, env, events }), { prefix: '/cmi5' });
