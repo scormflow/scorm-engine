@@ -94,6 +94,13 @@ function embedHarness() {
   return { prisma, storage, attempts, db };
 }
 
+/** The `window.__SCORMFLOW__` object a player page or hydrated runtime.js sets. */
+function bridgeConfig(body: string): any {
+  const match = /window\.__SCORMFLOW__ = (.*?);(?:<\/script>|\n)/.exec(body);
+  if (!match) throw new Error('no bridge config in response');
+  return JSON.parse(match[1]!);
+}
+
 describe('embed flow', () => {
   let app: FastifyInstance;
   let harness: ReturnType<typeof embedHarness>;
@@ -145,6 +152,47 @@ describe('embed flow', () => {
       expect(res.headers['content-type']).toContain('javascript');
       expect(res.body).toContain('window.API_1484_11');
       expect(res.body).toContain('window.API');
+      expect(res.headers['cache-control']).toBe('public, max-age=3600');
+      expect(res.body).not.toContain('__SCORMFLOW__ =');
+    });
+
+    it('prefixes a hydrated config when given an attempt and token', async () => {
+      const token = await mintToken();
+      const res = await app.inject({ method: 'GET', url: `/api/v1/runtime.js?attemptId=${ATTEMPT_ID}&token=${token}` });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toContain('javascript');
+      expect(res.headers['cache-control']).toBe('no-store');
+      const config = bridgeConfig(res.body);
+      expect(config).toMatchObject({
+        apiBase: 'http://localhost:80/api/v1',
+        attemptId: ATTEMPT_ID,
+        token,
+        version: 'SCORM_2004_4',
+        cmi: { 'cmi.location': 'page-2', 'cmi.learner_id': 'u1', 'cmi.learner_name': 'Ada' },
+      });
+      expect(config.replay).toBeUndefined();
+      expect(res.body).toContain('window.API_1484_11');
+    });
+
+    it('rejects a hydrated request with a bad or mismatched token', async () => {
+      const bad = await app.inject({ method: 'GET', url: `/api/v1/runtime.js?attemptId=${ATTEMPT_ID}&token=nope` });
+      expect(bad.statusCode).toBe(401);
+      const missing = await app.inject({ method: 'GET', url: `/api/v1/runtime.js?attemptId=${ATTEMPT_ID}` });
+      expect(missing.statusCode).toBe(401);
+      const token = await mintToken();
+      const other = await app.inject({ method: 'GET', url: `/api/v1/runtime.js?attemptId=other&token=${token}` });
+      expect(other.statusCode).toBe(403);
+      const noAttempt = await app.inject({ method: 'GET', url: `/api/v1/runtime.js?token=${token}` });
+      expect(noAttempt.statusCode).toBe(400);
+    });
+
+    it('turns on replay capture with replay=1', async () => {
+      const token = await mintToken();
+      const res = await app.inject({
+        method: 'GET',
+        url: `/api/v1/runtime.js?attemptId=${ATTEMPT_ID}&token=${token}&replay=1&pointer=true`,
+      });
+      expect(bridgeConfig(res.body).replay).toEqual({ pointer: true });
     });
   });
 
@@ -187,6 +235,32 @@ describe('embed flow', () => {
       const token = await mintToken();
       const res = await app.inject({ method: 'GET', url: `/api/v1/play/${ATTEMPT_ID}?token=${token}&source=external` });
       expect(res.statusCode).toBe(400);
+    });
+
+    it('leaves replay capture off unless asked for', async () => {
+      const token = await mintToken();
+      const res = await app.inject({ method: 'GET', url: `/api/v1/play/${ATTEMPT_ID}?token=${token}` });
+      expect(bridgeConfig(res.body).replay).toBeUndefined();
+    });
+
+    it('turns on replay capture with replay=1', async () => {
+      const token = await mintToken();
+      const res = await app.inject({ method: 'GET', url: `/api/v1/play/${ATTEMPT_ID}?token=${token}&replay=1` });
+      expect(bridgeConfig(res.body).replay).toEqual({});
+    });
+
+    it('ignores replay=1 when the engine has capture turned off', async () => {
+      await app.close();
+      app = await buildApp({
+        env: createTestEnv({ REPLAY_CAPTURE_ENABLED: false }),
+        prisma: harness.prisma,
+        storage: harness.storage,
+      });
+      await app.ready();
+      const token = await mintToken();
+      const res = await app.inject({ method: 'GET', url: `/api/v1/play/${ATTEMPT_ID}?token=${token}&replay=1&pointer=1` });
+      expect(res.statusCode).toBe(200);
+      expect(bridgeConfig(res.body).replay).toBeUndefined();
     });
   });
 

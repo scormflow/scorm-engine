@@ -27,6 +27,22 @@ function attempt(overrides: Partial<ReplayAttemptInput> = {}): ReplayAttemptInpu
 }
 
 describe('buildTimeline', () => {
+  it('keeps the finish after the terminating commit logged a few ms later', () => {
+    const finishedAt = at(300);
+    const timeline = buildTimeline(
+      attempt({ finishedAt, completionStatus: 'COMPLETED', status: 'COMPLETED' }),
+      [
+        { at: at(10), values: { 'cmi.location': 'slide-1', 'cmi.completion_status': 'incomplete' } },
+        { at: new Date(finishedAt.getTime() + 3), values: { 'cmi.location': 'slide-1', 'cmi.completion_status': 'completed' } },
+      ],
+      [],
+    );
+    const types = timeline.entries.map((e) => e.type);
+    expect(types[types.length - 1]).toBe('attempt.finished');
+    // The terminating commit's entries come right before it.
+    expect(timeline.entries.at(-2)!.at).toBe(new Date(finishedAt.getTime() + 3).toISOString());
+  });
+
   it('diffs consecutive commits into what the content reported', () => {
     const timeline = buildTimeline(
       attempt({ finishedAt: at(300), completionStatus: 'COMPLETED', successStatus: 'PASSED', status: 'COMPLETED' }),

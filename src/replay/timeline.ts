@@ -173,8 +173,12 @@ export function buildTimeline(
     })),
   ];
   if (attempt.finishedAt) {
+    // finishedAt is stamped just before the terminating commit's log row gets
+    // its createdAt, so that commit can read a few ms "after" the finish.
+    // Nothing is committed past Terminate; keep the finish after every commit.
+    const lastCommit = Math.max(...commits.map((c) => c.at.getTime()));
     raw.push({
-      at: attempt.finishedAt,
+      at: new Date(Math.max(attempt.finishedAt.getTime(), lastCommit)),
       type: 'attempt.finished',
       source: 'engine',
       location: null,
