@@ -30,7 +30,7 @@ import {
 export class AttemptServiceError extends Error {
   constructor(
     message: string,
-    public readonly code: 'course_not_found' | 'attempt_not_found' | 'attempt_finished',
+    public readonly code: 'course_not_found' | 'sco_not_found' | 'attempt_not_found' | 'attempt_finished',
     public readonly status: 404 | 409 = 404,
   ) {
     super(message);
@@ -41,6 +41,10 @@ export class AttemptServiceError extends Error {
 export interface StartAttemptInput {
   tenantId: string;
   courseId: string;
+  /**
+   * Target SCO by manifest `identifier` (what the course representation and
+   * `/play?scoId=` expose). A `Sco.id` row id is accepted too.
+   */
   scoId?: string | undefined;
   learnerExternalId: string;
   learnerName?: string | undefined;
@@ -69,6 +73,23 @@ export const SPEC_VERSION: Record<string, ScormVersion> = {
 };
 
 /**
+ * Find a course's SCO by manifest identifier, falling back to its row id.
+ * Identifiers win because they are the public SCO handle and survive
+ * re-publishing; row ids are only accepted for callers that stored one.
+ */
+export async function findSco(
+  prisma: PrismaClient,
+  courseId: string,
+  ref: string,
+): Promise<{ id: string; identifier: string; launchHref: string } | null> {
+  const select = { id: true, identifier: true, launchHref: true } as const;
+  return (
+    (await prisma.sco.findFirst({ where: { courseId, identifier: ref }, select })) ??
+    (await prisma.sco.findFirst({ where: { courseId, id: ref }, select }))
+  );
+}
+
+/**
  * Start a new attempt, or resume the learner's still-open attempt for this
  * course/SCO. A resumed attempt returns its last committed CMI snapshot and an
  * `entry` of `resume`; a fresh attempt starts `ab-initio`.
@@ -86,6 +107,12 @@ export async function startOrResumeAttempt(
   }
   const version = SPEC_VERSION[course.scormVersion] ?? 'SCORM_1_2';
 
+  // Attempt.scoId is a foreign key to the Sco row, never the manifest identifier.
+  const sco = input.scoId ? await findSco(prisma, course.id, input.scoId) : null;
+  if (input.scoId && !sco) {
+    throw new AttemptServiceError(`SCO "${input.scoId}" not found in this course`, 'sco_not_found');
+  }
+
   const learner = await upsertLearner(prisma, input.tenantId, input.learnerExternalId, input.learnerName);
 
   const existing = input.restart
@@ -95,7 +122,7 @@ export async function startOrResumeAttempt(
           tenantId: input.tenantId,
           courseId: input.courseId,
           learnerId: learner.id,
-          scoId: input.scoId ?? null,
+          scoId: sco?.id ?? null,
           status: 'IN_PROGRESS',
         },
         orderBy: { startedAt: 'desc' },
@@ -140,7 +167,7 @@ export async function startOrResumeAttempt(
       tenantId: input.tenantId,
       courseId: input.courseId,
       learnerId: learner.id,
-      scoId: input.scoId ?? null,
+      scoId: sco?.id ?? null,
       // Pin the live release so a later publish or rollback can't swap content mid-attempt.
       courseVersionId: course.currentVersionId ?? null,
       status: 'IN_PROGRESS',
@@ -152,7 +179,7 @@ export async function startOrResumeAttempt(
   input.events?.emit(input.tenantId, 'attempt.started', {
     attemptId: created.id,
     courseId: input.courseId,
-    scoId: input.scoId ?? null,
+    scoId: sco?.identifier ?? null,
     learnerId: input.learnerExternalId,
   });
 
@@ -256,7 +283,7 @@ export async function recordCommit(
       tenantId: true,
       courseId: true,
       learnerId: true,
-      scoId: true,
+      sco: { select: { identifier: true } },
       completionStatus: true,
       successStatus: true,
       scoreRaw: true,
@@ -370,7 +397,7 @@ export async function recordCommit(
     const data = {
       attemptId: attempt.id,
       courseId: attempt.courseId,
-      scoId: attempt.scoId ?? null,
+      scoId: attempt.sco?.identifier ?? null,
       learnerId: attempt.learner?.externalId ?? null,
       completionStatus: rollup.completionStatus,
       successStatus: rollup.successStatus,
@@ -383,7 +410,7 @@ export async function recordCommit(
       input.events.emit(attempt.tenantId, 'objective.mastered', {
         attemptId: attempt.id,
         courseId: attempt.courseId,
-        scoId: attempt.scoId ?? null,
+        scoId: attempt.sco?.identifier ?? null,
         learnerId: attempt.learner?.externalId ?? null,
         objective: {
           id: o.identifier,
