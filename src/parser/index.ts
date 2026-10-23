@@ -3,8 +3,15 @@ import { parseImsManifest, ManifestParseError, type ParsedManifest } from './man
 
 import type { StorageAdapter } from '../storage/types.js';
 
-export { extractZipToStorage, extractZipToDisk, readZipEntry, ZipExtractionError } from './zip.js';
-export { parseImsManifest, ManifestParseError } from './manifest.js';
+export {
+  extractZipToStorage,
+  extractZipToDisk,
+  readZipEntry,
+  readZipInventory,
+  ZipExtractionError,
+} from './zip.js';
+export type { ZipInventory, ZipInventoryEntry } from './zip.js';
+export { parseImsManifest, parseManifestTree, ManifestParseError } from './manifest.js';
 export type { ParsedManifest, ManifestSco, ScormVersion } from './manifest.js';
 
 export class PackageIngestError extends Error {

@@ -149,6 +149,97 @@ export async function readZipEntry(buffer: Buffer, entryName: string): Promise<B
   }
 }
 
+export interface ZipInventoryEntry {
+  /** Sanitized forward-slash path, or the raw name when `unsafe` is true. */
+  path: string;
+  sizeBytes: number;
+  compressedBytes: number;
+  /** True for absolute or `..` paths — these are never extracted. */
+  unsafe: boolean;
+}
+
+export interface ZipInventory {
+  entries: ZipInventoryEntry[];
+  totalBytes: number;
+  /** Contents of the entries selected by `readContent`, keyed by path. */
+  contents: Map<string, Buffer>;
+}
+
+interface InventoryOptions {
+  /** Decide per entry whether its bytes should be read into `contents`. */
+  readContent?: (path: string, sizeBytes: number) => boolean;
+  /** Hard cap on the total bytes read into `contents`. Defaults to 32 MiB. */
+  maxContentBytes?: number;
+  /** Hard cap on file count. Defaults to 50,000. */
+  maxFileCount?: number;
+}
+
+/**
+ * List every file entry in a ZIP buffer without writing anything, optionally
+ * reading a bounded subset of entries (e.g. small HTML/JS files) into memory.
+ * Used by the package validator.
+ */
+export async function readZipInventory(
+  buffer: Buffer,
+  options: InventoryOptions = {},
+): Promise<ZipInventory> {
+  const maxContentBytes = options.maxContentBytes ?? 32 * 1024 * 1024;
+  const maxFileCount = options.maxFileCount ?? DEFAULTS.maxFileCount;
+  const entries: ZipInventoryEntry[] = [];
+  const contents = new Map<string, Buffer>();
+  let totalBytes = 0;
+  let contentBytes = 0;
+
+  const zipfile = await openBuffer(buffer);
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      zipfile.on('error', reject);
+      zipfile.on('end', resolve);
+      zipfile.on('entry', (entry: Entry) => {
+        const handle = async (): Promise<void> => {
+          if (entry.fileName.endsWith('/')) {
+            zipfile.readEntry();
+            return;
+          }
+          if (entries.length + 1 > maxFileCount) {
+            throw new ZipExtractionError(`Archive exceeds the maximum file count (${maxFileCount})`);
+          }
+          const safePath = sanitizeEntryPath(entry.fileName);
+          const item: ZipInventoryEntry = {
+            path: safePath ?? entry.fileName,
+            sizeBytes: entry.uncompressedSize,
+            compressedBytes: entry.compressedSize,
+            unsafe: safePath === null,
+          };
+          entries.push(item);
+          totalBytes += entry.uncompressedSize;
+
+          if (
+            safePath !== null &&
+            options.readContent?.(safePath, entry.uncompressedSize) &&
+            contentBytes + entry.uncompressedSize <= maxContentBytes
+          ) {
+            const stream = await openReadStream(zipfile, entry);
+            const chunks: Buffer[] = [];
+            for await (const chunk of stream) chunks.push(chunk as Buffer);
+            const data = Buffer.concat(chunks);
+            contents.set(safePath, data);
+            contentBytes += data.length;
+          }
+          zipfile.readEntry();
+        };
+        handle().catch(reject);
+      });
+      zipfile.readEntry();
+    });
+  } finally {
+    zipfile.close();
+  }
+
+  return { entries, totalBytes, contents };
+}
+
 /** Convenience used by tests + dev tooling — extract to a local filesystem path. */
 export async function extractZipToDisk(
   buffer: Buffer,

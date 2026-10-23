@@ -54,6 +54,9 @@ export function coursesRoutes(deps: CoursesRouteDeps): FastifyPluginAsync {
         valid: report.valid,
         version: report.version,
         errors: report.errors,
+        warnings: report.warnings,
+        info: report.info,
+        stats: report.stats,
         manifest: report.manifest ? serializeManifest(report.manifest) : null,
       };
     });

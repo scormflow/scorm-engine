@@ -55,7 +55,7 @@ Full spec: [`openapi/openapi.yaml`](openapi/openapi.yaml).
 
 ```
 POST   /api/v1/courses                        Upload + register a SCORM package
-POST   /api/v1/courses/validate               Validate a package without registering
+POST   /api/v1/courses/validate               Validate a package without registering (full report)
 GET    /api/v1/courses                        List courses for the tenant
 GET    /api/v1/courses/:id                    Course metadata + SCO tree
 GET    /api/v1/courses/:id/content/*          Stream an extracted package file
@@ -143,6 +143,31 @@ GET    /api/v1/ai/calls                       AI call audit log (`?format=csv` t
 Auth: `X-API-Key: <api-key>` for tenant calls (the LRS included); a short-lived,
 attempt-scoped JWT for the browser player's runtime calls. Every LRS request
 except `/xapi/about` must also send `X-Experience-API-Version: 1.0.3`.
+
+### Package validation (API + CLI)
+
+`POST /courses/validate` and the `scormflow` CLI run the same validator, which
+never extracts or stores anything:
+
+```bash
+npx @scormflow/server validate course.zip            # human-readable report
+npx @scormflow/server validate *.zip --json --strict # CI: exit 1 on warnings too
+```
+
+| Category | Checks |
+|----------|--------|
+| structure | readable ZIP, `imsmanifest.xml` at the root (spots a course zipped inside its folder), unsafe `..` paths, OS junk files |
+| manifest | well-formed XML, version detection, duplicate identifiers, items pointing at undeclared resources, broken dependencies, default organization, 1.2 mastery score range |
+| resources | every SCO launch file present (query strings, `%20` and `xml:base` resolved), `<file>` entries present, case-only mismatches that break on Linux / S3 |
+| runtime | content looks for the right API (`API` vs `API_1484_11`), no SCORM 1.2 data model elements in a 2004 package or vice versa (version-agnostic wrappers are recognised) |
+| accessibility | `<html lang>`, `<img alt>`, `<title>` in HTML pages |
+| assets | files over 50 MiB, packages over 500 MiB, images over 1 MiB, BMP / TIFF, Flash / Shockwave / Silverlight / Java applets |
+
+Each issue has a stable `code`, a `severity` (`error`, `warning`, `info`), a
+`category` and an optional `path`. Only errors make a package invalid. The CLI
+also validates cmi5 packages (`cmi5.xml` + AU launch files) and exits `0` valid,
+`1` invalid, `2` on usage or I/O errors. In code: `validateScormPackage(buffer,
+{ accept: 'any' })`.
 
 ### xAPI attachments
 
@@ -466,6 +491,7 @@ Checkboxes reflect the actual state of `main`.
 - [x] Course ingestion service (upload → extract → parse → persist)
 - [x] Course management routes (upload, list, get, delete)
 - [x] Package validation endpoint (`POST /courses/validate`)
+- [x] Package validation engine: launch / resource files, identifier integrity, runtime API + CMI version checks, accessibility, asset size and format; `scormflow validate` CLI (SCORM + cmi5)
 - [x] API key auth + tenant scoping (`requireApiKey` preHandler)
 - [x] OpenAPI 3.1 spec as source of truth
 - [x] Dockerfile + docker-compose (engine + Postgres)

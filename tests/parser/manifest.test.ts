@@ -130,4 +130,22 @@ describe('parseImsManifest', () => {
     // Title falls back to manifest identifier when both org.title and LOM are missing.
     expect(m.title === 'MANIFEST-1' || m.title === 'Module 1' || m.title === 'Untitled Course').toBe(true);
   });
+
+  it('applies xml:base from <resources> and <resource> to launch hrefs', () => {
+    const xml = (resourcesBase: string, resourceBase: string, href: string) => `<?xml version="1.0"?>
+<manifest identifier="M" xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_rootv1p2">
+  <metadata><schema>ADL SCORM</schema><schemaversion>1.2</schemaversion></metadata>
+  <organizations default="O"><organization identifier="O"><title>T</title>
+    <item identifier="I" identifierref="R"><title>I</title></item></organization></organizations>
+  <resources${resourcesBase}><resource identifier="R" type="webcontent" adlcp:scormtype="sco"${resourceBase} href="${href}"/></resources>
+</manifest>`;
+    expect(parseImsManifest(xml(' xml:base="content/"', ' xml:base="unit1/"', 'start.html')).primarySco.launchHref)
+      .toBe('content/unit1/start.html');
+    expect(parseImsManifest(xml('', ' xml:base="./lesson///"', './a.html?x=1')).primarySco.launchHref)
+      .toBe('lesson/a.html?x=1');
+    expect(parseImsManifest(xml('', ' xml:base="https://cdn.example.com/"', 'a.html')).primarySco.launchHref)
+      .toBe('a.html');
+    expect(parseImsManifest(xml(' xml:base="content/"', '', 'https://x.example/a.html')).primarySco.launchHref)
+      .toBe('https://x.example/a.html');
+  });
 });
