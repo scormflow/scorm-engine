@@ -71,7 +71,9 @@ GET    /api/v1/runtime.js                     Drop-in SCORM 1.2 / 2004 browser b
 GET    /api/v1/play/:attemptId                Hydrated iframe player page (?replay=1 for session capture)
 
 GET    /api/v1/analytics/overview
+GET    /api/v1/analytics/trends               Daily started/completed/passed/failed series (?days=30&courseId=)
 GET    /api/v1/analytics/courses/:id
+GET    /api/v1/analytics/courses/:id/scores   Score histogram + mean/median (?bins=10)
 GET    /api/v1/analytics/learners/:id
 
 GET    /api/v1/xapi/about                     LRS version discovery (unauthenticated)

@@ -815,6 +815,55 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AnalyticsOverview' }
 
+  /analytics/trends:
+    get:
+      tags: [Analytics]
+      summary: Daily attempt trends
+      description: |
+        Daily (UTC) counts of attempts started and completed over the last
+        `days` days, ending today. Completions are bucketed by finish time
+        (falling back to the last commit) and split into passed / failed.
+        Every day in the window gets a bucket, so the series can be charted
+        without gap filling. Scope to one course with `courseId`.
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+        - name: courseId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Trend series
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsTrends' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /analytics/courses/{courseId}/scores:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+    get:
+      tags: [Analytics]
+      summary: Score distribution for a course
+      description: |
+        Histogram of scaled scores (0–1) across the course's scored attempts.
+        Scores below 0 (SCORM 2004 allows -1..1) fall into the first bin;
+        `averageScore` and `medianScore` use the raw values.
+      parameters:
+        - name: bins
+          in: query
+          schema: { type: integer, minimum: 2, maximum: 20, default: 10 }
+      responses:
+        '200':
+          description: Score distribution
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScoreDistribution' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /analytics/courses/{courseId}:
     parameters:
       - $ref: '#/components/parameters/CourseId'
@@ -2974,6 +3023,60 @@ components:
         recentAttempts:
           type: array
           items: { $ref: '#/components/schemas/Attempt' }
+
+    TrendBucket:
+      type: object
+      required: [date, started, completed, passed, failed, averageScore]
+      properties:
+        date: { type: string, format: date, description: UTC calendar day. }
+        started: { type: integer }
+        completed: { type: integer }
+        passed: { type: integer }
+        failed: { type: integer }
+        averageScore:
+          type: number
+          nullable: true
+          description: Mean scaled score of the attempts completed that day.
+
+    AnalyticsTrends:
+      type: object
+      required: [courseId, interval, from, to, buckets, totals]
+      properties:
+        courseId: { type: string, nullable: true }
+        interval: { type: string, enum: [day] }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        buckets:
+          type: array
+          items: { $ref: '#/components/schemas/TrendBucket' }
+        totals:
+          type: object
+          required: [started, completed, passed, failed]
+          properties:
+            started: { type: integer }
+            completed: { type: integer }
+            passed: { type: integer }
+            failed: { type: integer }
+
+    ScoreBin:
+      type: object
+      required: [min, max, count]
+      properties:
+        min: { type: number, description: Inclusive lower bound. }
+        max: { type: number, description: Exclusive upper bound (the last bin includes 1). }
+        count: { type: integer }
+
+    ScoreDistribution:
+      type: object
+      required: [courseId, scoredCount, averageScore, medianScore, bins]
+      properties:
+        courseId: { type: string }
+        scoredCount: { type: integer }
+        averageScore: { type: number, nullable: true }
+        medianScore: { type: number, nullable: true }
+        bins:
+          type: array
+          items: { $ref: '#/components/schemas/ScoreBin' }
 
     # ── LRS / xAPI 1.0.3 ─────────────────────────────────────────────────
     XapiAbout:
