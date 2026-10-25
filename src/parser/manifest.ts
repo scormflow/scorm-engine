@@ -62,7 +62,12 @@ const ARRAY_PATHS = new Set([
   'keyword',
 ]);
 
-export function parseImsManifest(xml: string): ParsedManifest {
+/**
+ * Parse `imsmanifest.xml` into the raw `<manifest>` element tree (namespace
+ * prefixes stripped, attributes as `@_name`, list elements always arrays).
+ * The validator walks this for checks the normalised `ParsedManifest` drops.
+ */
+export function parseManifestTree(xml: string): Record<string, unknown> {
   let doc: unknown;
   try {
     doc = xmlParser.parse(xml);
@@ -77,6 +82,11 @@ export function parseImsManifest(xml: string): ParsedManifest {
   if (!isRecord(manifest)) {
     throw new ManifestParseError('imsmanifest.xml is missing a <manifest> root element', 'malformed_xml');
   }
+  return manifest;
+}
+
+export function parseImsManifest(xml: string): ParsedManifest {
+  const manifest = parseManifestTree(xml);
 
   const version = detectVersion(manifest);
   const organizations = pick(manifest, 'organizations');
@@ -93,6 +103,7 @@ export function parseImsManifest(xml: string): ParsedManifest {
   }
 
   const resources = pick(manifest, 'resources');
+  const resourcesBase = xmlBase(resources);
   const resourceList = isRecord(resources) ? asArray<Record<string, unknown>>(resources.resource) : [];
   const resourceById = new Map<string, Record<string, unknown>>();
   for (const r of resourceList) {
@@ -108,12 +119,12 @@ export function parseImsManifest(xml: string): ParsedManifest {
       const resource = resourceById.get(identifierRef);
       if (resource) {
         const scormType = attr(resource, 'scormtype') ?? attr(resource, 'scormType');
-        const launchHref = attr(resource, 'href');
-        if (scormType?.toLowerCase() === 'sco' && launchHref) {
+        const href = attr(resource, 'href');
+        if (scormType?.toLowerCase() === 'sco' && href) {
           scos.push({
             identifier: attr(item, 'identifier') ?? identifierRef,
             title: textOf(item['title']) ?? identifierRef,
-            launchHref,
+            launchHref: applyXmlBase(href, resourcesBase, xmlBase(resource)),
             parameters: attr(item, 'parameters') ?? null,
             masteryScore: parseMastery(item),
           });
@@ -222,6 +233,33 @@ function extractLomMetadata(metadata: unknown): LomMetadata {
   };
 }
 
+function xmlBase(node: unknown): string | undefined {
+  return attr(node, 'base') ?? attr(node, 'xml:base');
+}
+
+const ABSOLUTE = /^[a-z][a-z0-9+.-]*:|^\/\//i;
+
+/**
+ * Prefix a package-relative href with the `xml:base` of its <resources> and
+ * <resource> elements, as the SCORM CAM allows. Absolute hrefs, and hrefs
+ * under an absolute base, are returned as-is.
+ */
+function applyXmlBase(href: string, ...bases: Array<string | undefined>): string {
+  if (ABSOLUTE.test(href)) return href;
+  const relative = bases.filter((b): b is string => !!b);
+  if (relative.length === 0 || relative.some((b) => ABSOLUTE.test(b))) return href;
+  const prefix = relative.map(trimBase).filter(Boolean).join('/');
+  return prefix ? `${prefix}/${href.replace(/^\.\//, '')}` : href;
+}
+
+/** Drop a leading `./` and trailing slashes (without a backtracking regex). */
+function trimBase(base: string): string {
+  let end = base.length;
+  while (end > 0 && base[end - 1] === '/') end--;
+  const start = base.startsWith('./') ? 2 : 0;
+  return base.slice(start, Math.max(start, end));
+}
+
 function parseMastery(item: Record<string, unknown>): number | null {
   // SCORM 1.2: <adlcp:masteryscore>80</adlcp:masteryscore>
   // SCORM 2004 sequencing-based mastery is a Day 3 concern.
@@ -230,6 +268,15 @@ function parseMastery(item: Record<string, unknown>): number | null {
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
 }
+
+/** Accessors for the tree returned by `parseManifestTree`. */
+export const manifestTree = {
+  isRecord: (value: unknown): value is Record<string, unknown> => isRecord(value),
+  pick: (value: unknown, key: string): unknown => pick(value, key),
+  attr: (value: unknown, key: string): string | undefined => attr(value, key),
+  textOf: (value: unknown): string | undefined => textOf(value),
+  asArray: <T = unknown>(value: unknown): T[] => asArray<T>(value),
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

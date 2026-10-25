@@ -4,13 +4,14 @@ import type { Course, PrismaClient, ScormVersion as PrismaScormVersion, Prisma }
 
 import {
   ingestScormPackage,
-  parsePackageManifest,
   PackageIngestError,
   type ParsedManifest,
   type ScormVersion as ManifestScormVersion,
 } from '../parser/index.js';
 import { tenantKey } from '../storage/scoped.js';
 import type { StorageAdapter } from '../storage/types.js';
+import { validateScormPackage } from '../validator/validate.js';
+import type { PackageValidationReport, ValidatePackageOptions } from '../validator/types.js';
 
 export class CourseServiceError extends Error {
   constructor(
@@ -44,12 +45,7 @@ export interface ValidatePackageDeps {
   // Validation does not touch the DB or storage.
 }
 
-export interface ValidationReport {
-  valid: boolean;
-  version: ManifestScormVersion | null;
-  manifest: ParsedManifest | null;
-  errors: Array<{ code: string; message: string }>;
-}
+export type ValidationReport = PackageValidationReport;
 
 const VERSION_MAP: Record<ManifestScormVersion, PrismaScormVersion> = {
   SCORM_1_2: 'SCORM_12',
@@ -128,22 +124,16 @@ export async function createCourseFromUpload(
   }
 }
 
-/** Parse and validate a package without persisting it. */
-export async function validatePackage(buffer: Buffer): Promise<ValidationReport> {
-  try {
-    const manifest = await parsePackageManifest(buffer);
-    return { valid: true, version: manifest.version, manifest, errors: [] };
-  } catch (err) {
-    if (err instanceof PackageIngestError) {
-      return {
-        valid: false,
-        version: null,
-        manifest: null,
-        errors: [{ code: err.code, message: err.message }],
-      };
-    }
-    throw err;
-  }
+/**
+ * Parse and validate a SCORM package without persisting it. Runs the full
+ * validator (structure, manifest, launch files, runtime API, accessibility,
+ * assets); `valid` is false only for `error`-severity issues.
+ */
+export async function validatePackage(
+  buffer: Buffer,
+  options: ValidatePackageOptions = {},
+): Promise<ValidationReport> {
+  return validateScormPackage(buffer, { accept: 'scorm', ...options });
 }
 
 export function serializeManifest(manifest: ParsedManifest): Record<string, unknown> {

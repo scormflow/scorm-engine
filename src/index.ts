@@ -26,6 +26,15 @@ export {
   validatePackage,
   CourseServiceError,
 } from './services/courses.js';
+export { formatReport, validateScormPackage } from './validator/index.js';
+export type {
+  IssueCategory,
+  IssueSeverity,
+  PackageType,
+  PackageValidationReport,
+  ValidatePackageOptions,
+  ValidationIssue,
+} from './validator/index.js';
 export { generateApiKey, hashApiKey } from './auth/api-key.js';
 export { TenantRateLimiter } from './http/rate-limit.js';
 export type { RateLimitDecision, TenantRateLimiterOptions } from './http/rate-limit.js';

@@ -126,6 +126,37 @@ describe('POST /api/v1/courses', () => {
     const body = res.json();
     expect(body.valid).toBe(true);
     expect(body.version).toBe('SCORM_1_2');
+    expect(body.stats).toMatchObject({ fileCount: 2, launchableCount: 1 });
+    expect(Array.isArray(body.warnings)).toBe(true);
+    expect(body.info.map((i: { code: string }) => i.code)).toContain('no_runtime_api_reference');
     expect(storage.files.size).toBe(0);
+  });
+
+  it('POST /api/v1/courses/validate reports a missing launch file as invalid', async () => {
+    const zip = buildScormZip({
+      manifestXml: `<?xml version="1.0"?>
+<manifest identifier="M" xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_rootv1p2">
+  <metadata><schema>ADL SCORM</schema><schemaversion>1.2</schemaversion></metadata>
+  <organizations default="O"><organization identifier="O"><title>T</title>
+    <item identifier="I" identifierref="R"><title>I</title></item></organization></organizations>
+  <resources><resource identifier="R" type="webcontent" adlcp:scormtype="sco" href="start.html"/></resources>
+</manifest>`,
+    });
+    const { payload, headers } = buildMultipartBody(zip);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/courses/validate',
+      payload,
+      headers: { ...headers, 'x-api-key': apiKey },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.valid).toBe(false);
+    expect(body.errors[0]).toMatchObject({
+      code: 'missing_launch_file',
+      severity: 'error',
+      category: 'resources',
+      path: 'start.html',
+    });
   });
 });
