@@ -348,6 +348,35 @@ curl -X POST $ENGINE/api/v1/ai/insights -H "X-API-Key: $KEY" \
   prompt's SHA-256, provider, model, tokens and cost (`GET /ai/calls`, CSV export).
 
 Provider URLs on private networks (a local Ollama) need `AI_ALLOW_PRIVATE_URLS=true`.
+
+### Session replay
+
+`GET /attempts/:id/replay` reconstructs what a learner did — *launched →
+slide 2 → answered q1 wrong → tab hidden 4 min → suspended → resumed → passed*
+— as an ordered timeline. Nothing extra needs recording for the basic version:
+every commit's CMI state is already in the commit log, and diffing consecutive
+commits recovers location, status, score, progress, interaction, objective and
+suspend / resume changes.
+
+For what happens *between* commits, a player can opt in to capture and post
+batches to `POST /attempts/:id/replay/events` with its attempt token:
+`page.hidden` / `page.visible`, `idle.start` / `idle.end`, `navigation`,
+`pointer` (x / y relative to the content frame), `media.play|pause|ended`, or
+any content-defined name such as `quiz.skipped`. Events carry a client id, so
+a retried batch is stored once.
+
+- **Visits.** Per-location enter / leave times and *active* seconds — suspended
+  stretches, hidden tabs, idle time and silences over 30 minutes don't count.
+- **Engagement score.** 0–100 from progress (0.4), focus — share of open time
+  the tab was visible and not idle (0.3), and interactivity — interactions per
+  active minute (0.3). Components without data are left out and the rest
+  reweighted, so a course without capture is scored on what is known.
+- **Course heatmap.** `GET /courses/:id/heatmap` folds the latest attempts
+  (default 50, at most 200) into per-location reach, dwell, interactions,
+  drop-offs (where unfinished attempts stopped) and a 10 × 10 pointer grid.
+
+Timelines are rebuilt on read; nothing is precomputed. Turn capture off with
+`REPLAY_CAPTURE_ENABLED=false`.
 The cap is checked before each call, so concurrent calls can overshoot it slightly.
 
 ---
@@ -418,6 +447,8 @@ Database: PostgreSQL (production) or SQLite (dev). ORM: Prisma. Schema in [`pris
 | `AI_ALLOW_PRIVATE_URLS` | Allow AI provider URLs on localhost / private networks, e.g. Ollama (default false) |
 | `AI_TIMEOUT_MS` | Per-call timeout for AI providers (default 60000) |
 | `AI_MAX_OUTPUT_TOKENS` | Longest answer requested from a model (default 1024) |
+| `REPLAY_CAPTURE_ENABLED` | Accept players' session-replay capture events (default true); commit-based timelines work either way |
+| `REPLAY_MAX_EVENTS_PER_ATTEMPT` | Capture events stored per attempt; later ones are dropped (default 5000) |
 
 ---
 
@@ -478,7 +509,7 @@ Checkboxes reflect the actual state of `main`.
 - [x] PII redaction pass for AI prompts
 - [x] AI key encryption at rest, per-feature configs, monthly token caps + alerts, kill-switch, call audit log
 - [ ] AI providers, phase 2: Azure OpenAI, AWS Bedrock (Groq / Together work today as `openai_compatible`)
-- [ ] Session replay (event timeline, heatmaps, engagement scoring)
+- [x] Session replay (event timeline from commits + opt-in capture, course heatmaps, engagement scoring)
 - [ ] Git-style course versioning (releases, diffs, rollback)
 - [ ] Universal Learning Content Gateway (SCORM / xAPI / cmi5 / H5P / HTML / video / PDF)
 - [ ] Compliance dashboards (audit log, attestation, certification expiry)

@@ -60,7 +60,8 @@ export interface StartedAttempt {
   resumeState: CmiState | undefined;
 }
 
-const SPEC_VERSION: Record<string, ScormVersion> = {
+/** The Prisma `ScormVersion` enum value -> the runtime's spec version. */
+export const SPEC_VERSION: Record<string, ScormVersion> = {
   SCORM_12: 'SCORM_1_2',
   SCORM_2004_2: 'SCORM_2004_2',
   SCORM_2004_3: 'SCORM_2004_3',
