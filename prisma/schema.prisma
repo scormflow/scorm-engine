@@ -595,7 +595,8 @@ model AiProviderConfig {
   id           String  @id @default(cuid())
   tenantId     String
   feature      String
-  /// openai | anthropic | gemini | mistral | ollama | openai_compatible
+  /// openai | anthropic | gemini | mistral | ollama | openai_compatible | groq | together
+  /// | azure_openai | bedrock | custom_http
   provider     String
   model        String
   baseUrl      String?
