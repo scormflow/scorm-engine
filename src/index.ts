@@ -94,6 +94,21 @@ export type {
   StateKey,
 } from './xapi/index.js';
 export {
+  CertificateError,
+  CertificateIssuer,
+  isCertificateEligible,
+  normalizeSerial,
+  renderCertificatePdf,
+  scorePercent,
+} from './certificates/index.js';
+export type {
+  CertificatePdfInput,
+  CertificateSettings,
+  CertificateVerification,
+  CertificateView,
+  IssueResult,
+} from './certificates/index.js';
+export {
   ALL_EVENTS,
   NOOP_SINK,
   SIGNATURE_HEADER,

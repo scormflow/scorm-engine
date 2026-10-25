@@ -7,6 +7,7 @@ import {
   getRuntimeState,
   startOrResumeAttempt,
   syncCommits,
+  type CertificateHook,
   type QueuedCommit,
   type ValidationMode,
 } from '../../tracking/index.js';
@@ -19,6 +20,8 @@ export interface AttemptsRouteDeps {
   events?: EventSink | undefined;
   /** CMI write validation policy; defaults to 'lenient'. */
   validationMode?: ValidationMode;
+  /** Issues completion certificates; certificates are off when omitted. */
+  certificates?: CertificateHook | undefined;
 }
 
 interface StartBody {
@@ -123,6 +126,7 @@ export function attemptsRoutes(deps: AttemptsRouteDeps): FastifyPluginAsync {
               events: deps.events,
               seq: queued.seq,
               recordedAt: queued.recordedAt,
+              certificates: deps.certificates,
             },
             prisma,
           );
@@ -174,6 +178,7 @@ export function attemptsRoutes(deps: AttemptsRouteDeps): FastifyPluginAsync {
               commits,
               mode: validationMode,
               events: deps.events,
+              certificates: deps.certificates,
             },
             prisma,
           );

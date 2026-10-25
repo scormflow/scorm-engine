@@ -17,6 +17,7 @@ import { createDataModel, RuntimeSession } from '../runtime/session.js';
 import type { CmiState, CmiSummary, RuntimeContext } from '../runtime/datamodel/types.js';
 import { secondsToIso8601 } from '../runtime/datamodel/validators.js';
 import type { EventSink } from '../webhooks/events.js';
+import { isCertificateEligible } from '../certificates/service.js';
 import { attemptTransitionEvents, masteredObjectives } from './events.js';
 import {
   extractInteractions,
@@ -175,6 +176,13 @@ export interface RecordCommitInput {
   seq?: number | undefined;
   /** When the client originally recorded the commit (offline sync). */
   recordedAt?: Date | undefined;
+  /** Issues the attempt's certificate once it becomes completed and not failed. */
+  certificates?: CertificateHook | undefined;
+}
+
+/** What the tracking service needs from the certificate engine. Must not throw. */
+export interface CertificateHook {
+  issueAfterCommit(tenantId: string, attemptId: string): Promise<void>;
 }
 
 export interface RuntimeState {
@@ -385,6 +393,16 @@ export async function recordCommit(
     }
   }
 
+  // Issue when the attempt first qualifies, and re-check when it finishes (a
+  // no-op if it already has one) in case an earlier issue failed.
+  const wasEligible = isCertificateEligible({
+    completionStatus: attempt.completionStatus ?? null,
+    successStatus: attempt.successStatus ?? null,
+  });
+  if (input.certificates && isCertificateEligible(rollup) && (!wasEligible || finished)) {
+    await input.certificates.issueAfterCommit(attempt.tenantId, attempt.id);
+  }
+
   return { suspended };
 }
 
@@ -412,6 +430,7 @@ export interface ApplyCommitInput {
   seq?: number | undefined;
   /** When the client originally recorded the commit, if it was queued offline. */
   recordedAt?: Date | undefined;
+  certificates?: CertificateHook | undefined;
 }
 
 export interface SetValueIssue {
@@ -538,6 +557,7 @@ export async function applyCommit(
       events: input.events,
       seq: input.seq,
       recordedAt: input.recordedAt,
+      certificates: input.certificates,
     },
     prisma,
   );
@@ -567,6 +587,7 @@ export interface SyncCommitsInput {
   commits: QueuedCommit[];
   mode?: ValidationMode | undefined;
   events?: EventSink | undefined;
+  certificates?: CertificateHook | undefined;
 }
 
 /**
@@ -629,6 +650,7 @@ export async function syncCommits(
           events: input.events,
           seq: commit.seq,
           recordedAt: commit.recordedAt,
+          certificates: input.certificates,
         },
         prisma,
       );

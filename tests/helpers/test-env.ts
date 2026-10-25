@@ -19,6 +19,8 @@ export function createTestEnv(overrides: Partial<Env> = {}): Env {
     WEBHOOK_ALLOW_PRIVATE_URLS: false,
     RATE_LIMIT_MAX: 0,
     RATE_LIMIT_WINDOW_SECONDS: 60,
+    CERTIFICATES_ENABLED: true,
+    CERTIFICATE_ISSUER: 'ScormFlow Test Academy',
     STORAGE_DRIVER: 'local',
     STORAGE_LOCAL_DIR: './.storage',
     S3_FORCE_PATH_STYLE: false,
