@@ -122,3 +122,21 @@ export type {
   WebhookEventType,
   WebhookPayload,
 } from './webhooks/index.js';
+export {
+  createEventBus,
+  EventBus,
+  MemoryTransport,
+  RedisStreamsTransport,
+  RespConnection,
+} from './events/index.js';
+export type {
+  EngineEvent,
+  EventBusLogger,
+  EventBusOptions,
+  EventHandler,
+  EventTransport,
+  ListenOptions,
+  RedisCommander,
+  RedisTransportOptions,
+  SubscribeOptions,
+} from './events/index.js';

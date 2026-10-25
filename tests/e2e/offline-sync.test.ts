@@ -28,7 +28,7 @@ describe('offline commit sync', () => {
     db = createMemoryDb({ tenantId: TENANT, apiKey: API_KEY });
     events = [];
     const webhooks = {
-      emit: (_tenantId: string, type: string) => events.push(type),
+      enqueue: async ({ type }: { type: string }) => events.push(type),
       start: () => undefined,
       stop: async () => undefined,
     } as unknown as WebhookDispatcher;
