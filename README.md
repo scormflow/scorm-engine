@@ -130,6 +130,14 @@ GET    /api/v1/certificates/verify/:serial    Public check of a printed certific
 GET    /api/v1/attempts/:id/certificate       The attempt's certificate (attempt token OK)
 GET    /api/v1/attempts/:id/certificate/pdf   Its PDF (attempt token via header or `?token=`)
 POST   /api/v1/attempts/:id/certificate       Issue now (idempotent; 409 if not eligible)
+
+GET    /api/v1/ai/providers                   AI provider configs (keys never returned)
+PUT    /api/v1/ai/providers/:feature          Set provider/model/key for default|insights|summary|recommendations
+DELETE /api/v1/ai/providers/:feature          Remove a config
+POST   /api/v1/ai/providers/test              Check a provider + key without storing it
+POST   /api/v1/ai/insights                    Insights / summary / recommendations (course or tenant)
+GET    /api/v1/ai/usage                       This month's tokens, cost and cap status per config
+GET    /api/v1/ai/calls                       AI call audit log (`?format=csv` to export)
 ```
 
 Auth: `X-API-Key: <api-key>` for tenant calls (the LRS included); a short-lived,
@@ -304,6 +312,44 @@ your own verification page to have its link (`<base>/<serial>`) printed too.
 A learner-facing page can fetch `/attempts/:id/certificate[/pdf]` with the
 attempt's player token. Turn the feature off with `CERTIFICATES_ENABLED=false`.
 
+### AI analytics (bring your own AI)
+
+Set `AI_MASTER_KEY` and each tenant can plug in its own model — OpenAI,
+Anthropic, Gemini, Mistral, a local Ollama, or any OpenAI-compatible endpoint.
+The engine never bundles or proxies a default model.
+
+```bash
+curl -X PUT $ENGINE/api/v1/ai/providers/default -H "X-API-Key: $KEY" \
+  -H 'content-type: application/json' \
+  -d '{"provider":"anthropic","model":"claude-sonnet-5-5","apiKey":"sk-ant-…","monthlyTokenCap":2000000}'
+
+curl -X POST $ENGINE/api/v1/ai/insights -H "X-API-Key: $KEY" \
+  -H 'content-type: application/json' -d '{"kind":"insights","courseId":"<id>"}'
+```
+
+- **Grounded in aggregates, not people.** The model sees outcome rates, where
+  unfinished attempts stopped (`lesson_location`), the most-failed objectives
+  and most-missed questions (with common wrong answers) over the latest 500
+  attempts — never learner ids, names or attempt ids.
+- **PII redaction.** Emails, card numbers, SSNs, IPs and phone numbers in the
+  prompt (course text, typed answers, your question) become `[EMAIL]` etc.
+  before it leaves. Turn it off per config (`redactPii: false`) for local models.
+- **Keys encrypted at rest.** Envelope encryption: a random AES-256-GCM data
+  key per stored key, wrapped by a per-tenant key derived from `AI_MASTER_KEY`.
+  Keys are write-only; responses show only `keyHint`. `POST /ai/providers/test`
+  checks a key without storing it.
+- **Per-feature scoping.** Configs for `insights`, `summary` and
+  `recommendations` override `default`, each with its own key and budget.
+- **Cost controls.** A monthly token cap per config (429 `ai_budget_exceeded`
+  once spent), `ai.budget.alert` at `alertThreshold` and at the cap, and an
+  `enabled` kill-switch. Give `inputCostPerMTok` / `outputCostPerMTok` to get
+  USD costs.
+- **Audit.** Every call — succeeded, failed or blocked — is logged with the
+  prompt's SHA-256, provider, model, tokens and cost (`GET /ai/calls`, CSV export).
+
+Provider URLs on private networks (a local Ollama) need `AI_ALLOW_PRIVATE_URLS=true`.
+The cap is checked before each call, so concurrent calls can overshoot it slightly.
+
 ---
 
 ## Architecture
@@ -319,6 +365,7 @@ src/
 ├── webhooks/     Endpoints, signing, delivery + retry worker   [done]
 ├── certificates/ Completion certificates + PDF writer          [done]
 ├── plugins/      Plugin host + built-in analytics plugin       [done]
+├── ai/           BYO-AI insights, key vault, PII redaction     [done]
 ├── storage/      Storage adapters: local disk, S3 / R2 / MinIO [done]
 ├── analytics/    Analytics + reporting                         [done]
 ├── http/         Fastify routes + runtime bridge               [done]
@@ -367,6 +414,10 @@ Database: PostgreSQL (production) or SQLite (dev). ORM: Prisma. Schema in [`pris
 | `CERTIFICATE_ISSUER` | Organization printed as the issuer (default `ScormFlow`) |
 | `CERTIFICATE_VERIFY_BASE_URL` | Public verification page; `<base>/<serial>` is printed on each certificate |
 | `CERTIFICATE_ACCENT_COLOR` | `#rrggbb` for the certificate frame and heading (default `#1f4e79`) |
+| `AI_MASTER_KEY` | 32-byte key (hex or base64) that encrypts tenants' AI provider keys; unset turns `/ai` off |
+| `AI_ALLOW_PRIVATE_URLS` | Allow AI provider URLs on localhost / private networks, e.g. Ollama (default false) |
+| `AI_TIMEOUT_MS` | Per-call timeout for AI providers (default 60000) |
+| `AI_MAX_OUTPUT_TOKENS` | Longest answer requested from a model (default 1024) |
 
 ---
 
@@ -423,8 +474,10 @@ Checkboxes reflect the actual state of `main`.
 - [ ] `certificatePlugin()` — certificates are still built in, toggled by `CERTIFICATES_ENABLED`
 
 ### Phase 3 — Category-defining
-- [ ] AI analytics layer with BYO provider + key (OpenAI / Anthropic / Gemini / Mistral / Ollama)
-- [ ] PII redaction pass for AI prompts
+- [x] AI analytics layer with BYO provider + key (OpenAI / Anthropic / Gemini / Mistral / Ollama / OpenAI-compatible)
+- [x] PII redaction pass for AI prompts
+- [x] AI key encryption at rest, per-feature configs, monthly token caps + alerts, kill-switch, call audit log
+- [ ] AI providers, phase 2: Azure OpenAI, AWS Bedrock (Groq / Together work today as `openai_compatible`)
 - [ ] Session replay (event timeline, heatmaps, engagement scoring)
 - [ ] Git-style course versioning (releases, diffs, rollback)
 - [ ] Universal Learning Content Gateway (SCORM / xAPI / cmi5 / H5P / HTML / video / PDF)

@@ -46,6 +46,9 @@ services:
       EVENT_BUS_DRIVER: ${EVENT_BUS_DRIVER:-memory}
       # Built-in plugins, comma-separated (e.g. `analytics`).
       PLUGINS: ${PLUGINS:-}
+      # Set (e.g. `openssl rand -hex 32`) to turn on AI analytics with tenants' own keys.
+      AI_MASTER_KEY: ${AI_MASTER_KEY:-}
+      AI_ALLOW_PRIVATE_URLS: ${AI_ALLOW_PRIVATE_URLS:-false}
     ports:
       - "3000:3000"
     volumes:

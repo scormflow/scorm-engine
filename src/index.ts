@@ -150,3 +150,31 @@ export type {
   PluginRoutes,
   ScormflowPlugin,
 } from './plugins/index.js';
+export {
+  AI_FEATURES,
+  AI_PROVIDERS,
+  AiError,
+  AiProviderError,
+  AiService,
+  buildInsightContext,
+  createProvider,
+  INSIGHT_KINDS,
+  KeyVault,
+  parseMasterKey,
+  redactPii,
+} from './ai/index.js';
+export type {
+  AIProvider,
+  AiCallView,
+  AiCompletion,
+  AiCompletionRequest,
+  AiConfigView,
+  AiFeature,
+  AiProviderId,
+  AiServiceOptions,
+  AiUsageView,
+  InsightContext,
+  InsightKind,
+  InsightResult,
+  RedactionResult,
+} from './ai/index.js';
