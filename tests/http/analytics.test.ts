@@ -88,6 +88,57 @@ describe('analytics routes', () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it('returns daily trends', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/analytics/trends?days=7', headers: auth });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.buckets).toHaveLength(7);
+    expect(body.courseId).toBeNull();
+    expect(body.totals).toEqual({ started: 0, completed: 0, passed: 0, failed: 0 });
+  });
+
+  it('rejects an out-of-range trend window', async () => {
+    for (const days of ['0', '366', '2.5', 'abc']) {
+      const res = await app.inject({ method: 'GET', url: `/api/v1/analytics/trends?days=${days}`, headers: auth });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it('404s trends for an unknown course', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/analytics/trends?courseId=missing',
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('returns a score distribution for a known course', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/analytics/courses/course_1/scores?bins=5',
+      headers: auth,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().bins).toHaveLength(5);
+    expect(res.json().courseId).toBe('course_1');
+  });
+
+  it('validates score bins and 404s unknown courses', async () => {
+    const bad = await app.inject({
+      method: 'GET',
+      url: '/api/v1/analytics/courses/course_1/scores?bins=1',
+      headers: auth,
+    });
+    expect(bad.statusCode).toBe(400);
+    const missing = await app.inject({
+      method: 'GET',
+      url: '/api/v1/analytics/courses/missing/scores',
+      headers: auth,
+    });
+    expect(missing.statusCode).toBe(404);
+  });
+
   it('returns learner analytics for a known learner', async () => {
     const res = await app.inject({
       method: 'GET',

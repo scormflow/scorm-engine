@@ -12,3 +12,19 @@ export type {
   CourseAnalytics,
   LearnerAnalytics,
 } from './service.js';
+export {
+  DEFAULT_SCORE_BINS,
+  DEFAULT_TREND_DAYS,
+  MAX_SCORE_BINS,
+  MAX_TREND_DAYS,
+  MIN_SCORE_BINS,
+  getScoreDistribution,
+  getTrends,
+} from './trends.js';
+export type {
+  AnalyticsTrends,
+  ScoreBin,
+  ScoreDistribution,
+  TrendBucket,
+  TrendOptions,
+} from './trends.js';
