@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import type { PrismaClient } from '../../db/client.js';
 import type { Env } from '../../config/env.js';
 import { getRuntimeState, type RuntimeState } from '../../tracking/index.js';
+import { manifestScos } from '../../versioning/service.js';
 import { ATTEMPT_COOKIE, type AttemptTokenPayload } from '../../auth/attempt-token.js';
 import {
   renderBridgeConfig,
@@ -197,25 +198,32 @@ export function embedRoutes(deps: EmbedRouteDeps): FastifyPluginAsync {
     // Engine-hosted: resolve the SCO's launch href within the course content path.
     const attempt = await prisma.attempt.findFirst({
       where: { id: payload.attemptId, tenantId: payload.tenantId },
-      select: { courseId: true, scoId: true, course: { select: { launchUrl: true, storageKey: true } } },
+      select: {
+        courseId: true,
+        scoId: true,
+        course: { select: { launchUrl: true, storageKey: true } },
+        courseVersion: { select: { launchUrl: true, storageKey: true, manifest: true } },
+      },
     });
     if (!attempt) return null;
+    // An attempt pinned to a release launches from that release, not the live one.
+    const release = attempt.courseVersion ?? attempt.course;
 
     const scoId = query.scoId ?? payload.scoId ?? attempt.scoId ?? undefined;
     let launchHref: string | undefined;
-    if (scoId) {
+    if (scoId && attempt.courseVersion) {
+      launchHref = manifestScos(attempt.courseVersion.manifest).find((s) => s.identifier === scoId)?.launchHref || undefined;
+    } else if (scoId) {
       const sco = await prisma.sco.findFirst({
         where: { courseId: attempt.courseId, identifier: scoId },
         select: { launchHref: true },
       });
       launchHref = sco?.launchHref;
     }
-    // Fall back to the course's primary launch URL (storageKey-relative).
+    // Fall back to the release's primary launch URL (storageKey-relative).
     if (!launchHref) {
-      const prefix = `${attempt.course.storageKey}/`;
-      launchHref = attempt.course.launchUrl.startsWith(prefix)
-        ? attempt.course.launchUrl.slice(prefix.length)
-        : attempt.course.launchUrl;
+      const prefix = `${release.storageKey}/`;
+      launchHref = release.launchUrl.startsWith(prefix) ? release.launchUrl.slice(prefix.length) : release.launchUrl;
     }
     return `/api/v1/courses/${encodeURIComponent(attempt.courseId)}/content/${launchHref}`;
   }

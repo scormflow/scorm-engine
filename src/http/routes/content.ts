@@ -23,7 +23,7 @@ export function contentRoutes(deps: ContentRouteDeps): FastifyPluginAsync {
   const { prisma, storage } = deps;
 
   return async function (app: FastifyInstance): Promise<void> {
-    app.get<{ Params: { courseId: string; '*': string } }>(
+    app.get<{ Params: { courseId: string; '*': string }; Querystring: { version?: string } }>(
       '/courses/:courseId/content/*',
       async (req, reply) => {
         const { courseId } = req.params;
@@ -34,10 +34,11 @@ export function contentRoutes(deps: ContentRouteDeps): FastifyPluginAsync {
           return reply.code(400).send({ code: 'invalid_path', message: 'Invalid content path' });
         }
 
-        const tenantId = await authorize(app, req, courseId, prisma);
-        if (!tenantId) {
+        const access = await authorize(app, req, courseId, prisma);
+        if (!access) {
           return reply.code(401).send({ code: 'unauthorized', message: 'Content access denied' });
         }
+        const { tenantId } = access;
 
         const course = await prisma.course.findFirst({
           where: { id: courseId, tenantId },
@@ -47,11 +48,25 @@ export function contentRoutes(deps: ContentRouteDeps): FastifyPluginAsync {
           return reply.code(404).send({ code: 'course_not_found', message: 'Course not found' });
         }
 
-        if (!isTenantKey(tenantId, course.storageKey)) {
-          req.log.error({ storageKey: course.storageKey }, 'course storage key is outside its tenant prefix');
+        // Learners get the release their attempt launched on; API-key callers
+        // the live release unless they ask for `?version=N`.
+        let storageKey = access.pinnedStorageKey ?? course.storageKey;
+        if (!access.attempt && req.query.version !== undefined) {
+          const number = Number(req.query.version);
+          const version = Number.isInteger(number)
+            ? await prisma.courseVersion.findFirst({ where: { courseId, tenantId, number }, select: { storageKey: true } })
+            : null;
+          if (!version) {
+            return reply.code(404).send({ code: 'version_not_found', message: 'Course version not found' });
+          }
+          storageKey = version.storageKey;
+        }
+
+        if (!isTenantKey(tenantId, storageKey)) {
+          req.log.error({ storageKey }, 'course storage key is outside its tenant prefix');
           return reply.code(404).send({ code: 'course_not_found', message: 'Course not found' });
         }
-        const key = `${course.storageKey}/${relPath}`;
+        const key = `${storageKey}/${relPath}`;
         try {
           const stream = await storage.get(key);
           reply.header('Cache-Control', 'private, max-age=300');
@@ -68,16 +83,24 @@ export function contentRoutes(deps: ContentRouteDeps): FastifyPluginAsync {
   };
 }
 
-/** Resolve the tenant permitted to read this course's content, or null. */
+interface ContentAccess {
+  tenantId: string;
+  /** True when access came from an attempt token rather than an API key. */
+  attempt: boolean;
+  /** Storage prefix of the release the attempt is pinned to, if any. */
+  pinnedStorageKey: string | null;
+}
+
+/** Resolve who may read this course's content (and which release), or null. */
 async function authorize(
   app: FastifyInstance,
   req: FastifyRequest,
   courseId: string,
   prisma: PrismaClient,
-): Promise<string | null> {
+): Promise<ContentAccess | null> {
   if (req.headers['x-api-key']) {
     await app.requireApiKey(req);
-    return req.tenantId;
+    return { tenantId: req.tenantId, attempt: false, pinnedStorageKey: null };
   }
   const token = extractToken(req);
   if (!token) return null;
@@ -85,9 +108,10 @@ async function authorize(
   // The token must be for an attempt on this very course.
   const attempt = await prisma.attempt.findFirst({
     where: { id: payload.attemptId, tenantId: payload.tenantId, courseId },
-    select: { id: true },
+    select: { id: true, courseVersion: { select: { storageKey: true } } },
   });
-  return attempt ? payload.tenantId : null;
+  if (!attempt) return null;
+  return { tenantId: payload.tenantId, attempt: true, pinnedStorageKey: attempt.courseVersion?.storageKey ?? null };
 }
 
 const CONTENT_TYPES: Record<string, string> = {

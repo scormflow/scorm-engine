@@ -42,6 +42,7 @@ export interface MockPrismaResult {
   prisma: PrismaClient;
   state: {
     courses: CourseRow[];
+    versions: any[];
     apiKeys: ApiKeyRow[];
     tenantId: string;
     apiKeyPlaintext: string;
@@ -65,8 +66,9 @@ export function createMockPrisma(seed: MockPrismaSeed = {}): MockPrismaResult {
 
   const courses: CourseRow[] = [];
   const apiKeys: ApiKeyRow[] = [apiKey];
+  const versions: any[] = [];
 
-  const prisma = {
+  const prisma: PrismaClient = {
     apiKey: {
       findUnique: async ({ where, select: _select }: { where: { hashedKey: string }; select?: unknown }) => {
         const row = apiKeys.find((k) => k.hashedKey === where.hashedKey);
@@ -121,16 +123,32 @@ export function createMockPrisma(seed: MockPrismaSeed = {}): MockPrismaResult {
       findMany: async ({ where, include: _include }: { where: any; include?: any; orderBy?: any; take?: number }) => {
         return courses.filter((c) => c.tenantId === where.tenantId);
       },
+      update: async ({ where, data }: { where: { id: string }; data: any }) => {
+        const row = courses.find((c) => c.id === where.id);
+        if (!row) throw new Error('not found');
+        Object.assign(row, data);
+        return row;
+      },
       delete: async ({ where }: { where: { id: string } }) => {
         const idx = courses.findIndex((c) => c.id === where.id);
         if (idx >= 0) courses.splice(idx, 1);
         return { id: where.id };
       },
     },
+    courseVersion: {
+      create: async ({ data }: { data: any }) => {
+        const row = { id: randomUUID(), createdAt: new Date(), ...data };
+        versions.push(row);
+        return row;
+      },
+      findMany: async ({ where }: { where: { courseId: string } }) =>
+        versions.filter((v) => v.courseId === where.courseId),
+    },
+    $transaction: async (fn: (tx: unknown) => unknown) => fn(prisma),
   } as unknown as PrismaClient;
 
   return {
     prisma,
-    state: { courses, apiKeys, tenantId, apiKeyPlaintext },
+    state: { courses, versions, apiKeys, tenantId, apiKeyPlaintext },
   };
 }

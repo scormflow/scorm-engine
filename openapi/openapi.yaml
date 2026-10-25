@@ -416,6 +416,12 @@ paths:
                 title:
                   type: string
                   description: Override the title parsed from the manifest.
+                label:
+                  type: string
+                  description: Label for release 1 (default `1.0`). See `CourseVersion.label`.
+                releaseNotes:
+                  type: string
+                  description: Changelog entry for release 1.
           application/json:
             schema:
               type: object
@@ -533,9 +539,19 @@ paths:
         scoped to an attempt on this course — supplied as a bearer token, `?token=`,
         or the `sf_attempt` cookie the `/play` page sets so the SCO's relative
         sub-resource requests authenticate automatically.
+
+        Content is versioned: an attempt token always reads the release its
+        attempt launched on (see `CourseVersion`), even after a newer release is
+        published or the course is rolled back. API-key callers read the live
+        release, or any release with `?version=`.
       security:
         - ApiKeyAuth: []
         - AttemptJWT: []
+      parameters:
+        - name: version
+          in: query
+          schema: { type: integer, minimum: 1 }
+          description: Release number to read (API key only; ignored for attempt tokens).
       responses:
         '200':
           description: The requested file.
@@ -580,6 +596,173 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ValidationReport'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Course versioning
+  # ─────────────────────────────────────────────────────────────────────────
+  /courses/{courseId}/versions:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+    get:
+      tags: [Courses]
+      operationId: listCourseVersions
+      summary: List a course's releases (newest first) — its changelog
+      responses:
+        '200':
+          description: Releases
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CourseVersionList' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Courses]
+      operationId: publishCourseVersion
+      summary: Publish a new release of a course
+      description: |
+        Uploads a new package for an existing course. It is stored under its own
+        prefix, so earlier releases stay available. By default the release goes
+        live immediately: the course's title, launch URL, manifest and SCO list
+        follow it (SCO rows are matched by manifest identifier and keep their
+        ids). Attempts already in progress stay on the release they started.
+
+        Without `label`, the previous `X.Y` label is bumped (`bump=minor` →
+        `1.1`, `bump=major` → `2.0`); a free-form previous label falls back to
+        `<number>.0`. Emits `course.version.published`.
+
+        A course uploaded before versioning gets a baseline release 1 (without a
+        file inventory) the first time a new release is published.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary, description: SCORM package ZIP. }
+                label: { type: string, description: 'Release label, e.g. `1.1`. Unique per course.' }
+                bump: { type: string, enum: [major, minor], default: minor }
+                releaseNotes: { type: string, maxLength: 10000 }
+                title: { type: string, description: Override the title parsed from the manifest. }
+                activate:
+                  type: string
+                  enum: ['true', 'false']
+                  default: 'true'
+                  description: '`false` stores the release without making it live (activate later with rollback).'
+      responses:
+        '201':
+          description: Release published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CourseVersion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The label is already used by another release of this course.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: Invalid SCORM package
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /courses/{courseId}/versions/diff:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+    get:
+      tags: [Courses]
+      operationId: diffCourseVersions
+      summary: Diff two releases (metadata, SCOs, assets)
+      parameters:
+        - name: from
+          in: query
+          schema: { type: integer, minimum: 1 }
+          description: Defaults to the release before `to`.
+        - name: to
+          in: query
+          schema: { type: integer, minimum: 1 }
+          description: Defaults to the live release.
+      responses:
+        '200':
+          description: Diff
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CourseVersionDiff' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /courses/{courseId}/versions/{number}:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+      - name: number
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    get:
+      tags: [Courses]
+      operationId: getCourseVersion
+      summary: Get one release
+      responses:
+        '200':
+          description: Release
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CourseVersion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Courses]
+      operationId: updateCourseVersion
+      summary: Edit a release's notes
+      description: Releases are immutable apart from their changelog entry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [releaseNotes]
+              properties:
+                releaseNotes: { type: [string, 'null'], maxLength: 10000 }
+      responses:
+        '200':
+          description: Updated release
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CourseVersion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /courses/{courseId}/rollback:
+    parameters:
+      - $ref: '#/components/parameters/CourseId'
+    post:
+      tags: [Courses]
+      operationId: rollbackCourse
+      summary: Make an existing release live again
+      description: |
+        Points the course at release `version` (older or newer). New attempts
+        launch it; attempts in progress keep their pinned release. A no-op when
+        it is already live. Emits `course.version.rolled_back`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: The release that is now live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CourseVersion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   # ─────────────────────────────────────────────────────────────────────────
   # Attempts
@@ -2577,8 +2760,138 @@ components:
         manifest:
           $ref: '#/components/schemas/ManifestMetadata'
         sizeBytes: { type: integer }
+        currentVersion:
+          description: The live release; null for a course uploaded before versioning.
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [number, label]
+              properties:
+                number: { type: integer }
+                label: { type: string }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+
+    CourseVersion:
+      type: object
+      description: An immutable release of a course package.
+      required:
+        [id, courseId, number, label, releaseNotes, current, title, description, scormVersion, masteryScore,
+         launchHref, scoCount, fileCount, sizeBytes, packageSha256, createdAt]
+      properties:
+        id: { type: string }
+        courseId: { type: string }
+        number: { type: integer, description: '1, 2, 3… in publish order.' }
+        label: { type: string, description: 'Human release name, e.g. `1.0`, `1.1`, `2.0`.' }
+        releaseNotes: { type: [string, 'null'] }
+        current: { type: boolean, description: Whether this is the live release. }
+        title: { type: string }
+        description: { type: [string, 'null'] }
+        scormVersion: { $ref: '#/components/schemas/ScormVersion' }
+        masteryScore: { type: [number, 'null'] }
+        launchHref: { type: string, description: Primary launch file, relative to the package root. }
+        scoCount: { type: integer }
+        fileCount: { type: integer, description: 0 for a baseline backfilled from a pre-versioning course. }
+        sizeBytes: { type: integer }
+        packageSha256: { type: [string, 'null'], description: SHA-256 of the uploaded ZIP; null for a backfilled baseline. }
+        createdAt: { type: string, format: date-time }
+
+    CourseVersionList:
+      type: object
+      required: [data, currentVersion]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/CourseVersion' }
+        currentVersion: { type: [integer, 'null'], description: Number of the live release. }
+
+    VersionFieldChange:
+      type: object
+      required: [field, from, to]
+      properties:
+        field: { type: string }
+        from: {}
+        to: {}
+
+    VersionSco:
+      type: object
+      required: [identifier, title, launchHref, parameters]
+      properties:
+        identifier: { type: string }
+        title: { type: string }
+        launchHref: { type: string }
+        parameters: { type: [string, 'null'] }
+
+    VersionFile:
+      type: object
+      required: [path, sizeBytes, sha256]
+      properties:
+        path: { type: string }
+        sizeBytes: { type: integer }
+        sha256: { type: string }
+
+    CourseVersionDiff:
+      type: object
+      required: [from, to, identical, metadata, scos, assets, breakingChanges]
+      properties:
+        from: { $ref: '#/components/schemas/CourseVersionRef' }
+        to: { $ref: '#/components/schemas/CourseVersionRef' }
+        identical:
+          type: boolean
+          description: Nothing differs. Always false when assets can't be compared.
+        metadata:
+          type: array
+          description: 'Changed fields among `title`, `description`, `scormVersion`, `masteryScore`, `launchHref`.'
+          items: { $ref: '#/components/schemas/VersionFieldChange' }
+        scos:
+          type: object
+          required: [added, removed, changed]
+          description: SCOs matched by manifest identifier.
+          properties:
+            added: { type: array, items: { $ref: '#/components/schemas/VersionSco' } }
+            removed: { type: array, items: { $ref: '#/components/schemas/VersionSco' } }
+            changed:
+              type: array
+              items:
+                type: object
+                required: [identifier, changes]
+                properties:
+                  identifier: { type: string }
+                  changes: { type: array, items: { $ref: '#/components/schemas/VersionFieldChange' } }
+        assets:
+          description: Files matched by path and compared by SHA-256; null when either side is a backfilled baseline.
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [added, removed, modified, unchangedCount, bytesDelta]
+              properties:
+                added: { type: array, items: { $ref: '#/components/schemas/VersionFile' } }
+                removed: { type: array, items: { $ref: '#/components/schemas/VersionFile' } }
+                modified:
+                  type: array
+                  items:
+                    type: object
+                    required: [path, fromSizeBytes, toSizeBytes]
+                    properties:
+                      path: { type: string }
+                      fromSizeBytes: { type: integer }
+                      toSizeBytes: { type: integer }
+                unchangedCount: { type: integer }
+                bytesDelta: { type: integer }
+        breakingChanges:
+          type: array
+          description: |
+            Human-readable changes that could strand a learner relaunching on
+            the new release: a removed SCO, a SCO launching a different file, a
+            SCORM edition change. Advisory — running attempts stay pinned.
+          items: { type: string }
+
+    CourseVersionRef:
+      type: object
+      required: [number, label]
+      properties:
+        number: { type: integer }
+        label: { type: string }
 
     Sco:
       type: object
@@ -3598,6 +3911,8 @@ components:
         - cmi5.course.satisfied
         - xapi.statement.stored
         - ai.budget.alert
+        - course.version.published
+        - course.version.rolled_back
         - webhook.test
 
     WebhookEndpoint:

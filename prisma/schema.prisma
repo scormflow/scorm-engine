@@ -15,6 +15,7 @@ model Tenant {
 
   apiKeys        ApiKey[]
   courses        Course[]
+  courseVersions CourseVersion[]
   learners       Learner[]
   attempts       Attempt[]
   xapiStatements XapiStatement[]
@@ -66,11 +67,56 @@ model Course {
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  scos         Sco[]
-  attempts     Attempt[]
-  certificates Certificate[]
+  /// The live release. The columns above mirror it, so readers that predate
+  /// versioning keep working; rollback only moves this pointer. Null for a
+  /// course uploaded before versioning existed until its next publish.
+  currentVersionId String? @unique
 
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  currentVersion CourseVersion?  @relation("CourseCurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  versions       CourseVersion[] @relation("CourseVersions")
+  scos           Sco[]
+  attempts       Attempt[]
+  certificates   Certificate[]
+
+  @@index([tenantId])
+}
+
+/// An immutable release of a course package. Every published upload gets its
+/// own storage prefix, so older releases stay launchable for the attempts
+/// pinned to them and for rollback. `files` is the per-file SHA-256 inventory
+/// the asset diff compares; it is null for a baseline backfilled from a course
+/// uploaded before versioning, whose files were never hashed.
+model CourseVersion {
+  id            String       @id @default(cuid())
+  tenantId      String
+  courseId      String
+  /// 1, 2, 3… in publish order.
+  number        Int
+  /// Human release name, e.g. `1.0`, `1.1`, `2.0`. Unique per course.
+  label         String
+  releaseNotes  String?
+  title         String
+  description   String?
+  scormVersion  ScormVersion
+  storageKey    String
+  launchUrl     String
+  masteryScore  Float?
+  manifest      Json
+  files         Json?
+  fileCount     Int          @default(0)
+  sizeBytes     BigInt       @default(0)
+  /// SHA-256 of the uploaded ZIP; null for a backfilled baseline.
+  packageSha256 String?
+  createdAt     DateTime     @default(now())
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  course    Course    @relation("CourseVersions", fields: [courseId], references: [id], onDelete: Cascade)
+  currentOf Course?   @relation("CourseCurrentVersion")
+  attempts  Attempt[]
+
+  @@unique([courseId, number])
+  @@unique([courseId, label])
   @@index([tenantId])
 }
 
@@ -170,8 +216,13 @@ model Attempt {
   /// carrying a `seq` at or below this are acknowledged without re-applying.
   lastCommitSeq Int?
 
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  course       Course        @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  /// The course release this attempt launched on. Content keeps being served
+  /// from it after a newer version is published or the course is rolled back.
+  courseVersionId String?
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  course        Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  courseVersion CourseVersion? @relation(fields: [courseVersionId], references: [id], onDelete: SetNull)
   learner      Learner       @relation(fields: [learnerId], references: [id], onDelete: Cascade)
   sco          Sco?          @relation(fields: [scoId], references: [id], onDelete: SetNull)
   interactions Interaction[]

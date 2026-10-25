@@ -14,6 +14,7 @@ export interface MemoryDb {
   prisma: PrismaClient;
   tables: {
     courses: Row[];
+    courseVersions: Row[];
     scos: Row[];
     learners: Row[];
     attempts: Row[];
@@ -37,6 +38,7 @@ export interface MemoryDb {
 export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
   const tables: MemoryDb['tables'] = {
     courses: [],
+    courseVersions: [],
     scos: [],
     learners: [],
     attempts: [],
@@ -53,10 +55,12 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
   const relations: Record<string, Record<string, (row: Row) => Row | Row[] | null>> = {
     course: {
       scos: (c) => sortBy(tables.scos.filter((s) => s.courseId === c.id), 'order'),
+      currentVersion: (c) => tables.courseVersions.find((v) => v.id === c.currentVersionId) ?? null,
     },
     attempt: {
       course: (a) => tables.courses.find((c) => c.id === a.courseId) ?? null,
       learner: (a) => tables.learners.find((l) => l.id === a.learnerId) ?? null,
+      courseVersion: (a) => tables.courseVersions.find((v) => v.id === a.courseVersionId) ?? null,
       objectives: (a) => sortBy(tables.objectives.filter((o) => o.attemptId === a.id), 'index'),
       interactions: (a) => sortBy(tables.interactions.filter((i) => i.attemptId === a.id), 'index'),
     },
@@ -181,6 +185,7 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
       rows.push(...remaining);
     };
     keep(tables.scos, (s) => s.courseId === courseId);
+    keep(tables.courseVersions, (v) => v.courseId === courseId);
     keep(tables.attempts, (a) => attemptIds.has(a.id));
     keep(tables.objectives, (o) => attemptIds.has(o.attemptId));
     keep(tables.interactions, (i) => attemptIds.has(i.attemptId));
@@ -201,14 +206,27 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
       id: randomUUID(),
       description: null,
       masteryScore: null,
+      currentVersionId: null,
       createdAt: now(),
       updatedAt: now(),
+    })),
+    courseVersion: table('courseVersion', tables.courseVersions, () => ({
+      id: randomUUID(),
+      releaseNotes: null,
+      description: null,
+      masteryScore: null,
+      files: null,
+      fileCount: 0,
+      sizeBytes: 0n,
+      packageSha256: null,
+      createdAt: now(),
     })),
     sco: table('sco', tables.scos, () => ({ id: randomUUID() })),
     learner: table('learner', tables.learners, () => ({ id: randomUUID(), name: null, createdAt: now() })),
     attempt: table('attempt', tables.attempts, () => ({
       id: randomUUID(),
       scoId: null,
+      courseVersionId: null,
       status: 'IN_PROGRESS',
       lessonStatus: 'NOT_ATTEMPTED',
       completionStatus: 'NOT_ATTEMPTED',

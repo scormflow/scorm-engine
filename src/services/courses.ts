@@ -1,14 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
-import type { Course, PrismaClient, ScormVersion as PrismaScormVersion, Prisma } from '@prisma/client';
+import type { Course, PrismaClient } from '@prisma/client';
 
-import {
-  ingestScormPackage,
-  PackageIngestError,
-  type ParsedManifest,
-  type ScormVersion as ManifestScormVersion,
-} from '../parser/index.js';
+import { ingestScormPackage, PackageIngestError, type ParsedManifest } from '../parser/index.js';
 import { tenantKey } from '../storage/scoped.js';
+import { headColumns, packageSha256, releaseData } from '../versioning/service.js';
 import type { StorageAdapter } from '../storage/types.js';
 import { validateScormPackage } from '../validator/validate.js';
 import type { PackageValidationReport, ValidatePackageOptions } from '../validator/types.js';
@@ -34,6 +30,9 @@ export interface CreateCourseInput {
   buffer: Buffer;
   /** Optional override for the title parsed from the manifest. */
   titleOverride?: string | undefined;
+  /** Label for release 1 (default `1.0`). */
+  versionLabel?: string | undefined;
+  releaseNotes?: string | undefined;
 }
 
 export interface CreateCourseDeps {
@@ -47,13 +46,6 @@ export interface ValidatePackageDeps {
 
 export type ValidationReport = PackageValidationReport;
 
-const VERSION_MAP: Record<ManifestScormVersion, PrismaScormVersion> = {
-  SCORM_1_2: 'SCORM_12',
-  SCORM_2004_2: 'SCORM_2004_2',
-  SCORM_2004_3: 'SCORM_2004_3',
-  SCORM_2004_4: 'SCORM_2004_4',
-};
-
 /**
  * Upload + parse + persist a SCORM package.
  *
@@ -61,7 +53,7 @@ const VERSION_MAP: Record<ManifestScormVersion, PrismaScormVersion> = {
  *  1. Parse the manifest from the in-memory buffer (fail fast on bad packages).
  *  2. Allocate a course ID up-front so the storage prefix is stable.
  *  3. Extract package files to storage under that prefix.
- *  4. Persist Course + Sco rows in a single transaction.
+ *  4. Persist Course + Sco rows and release 1 (`CourseVersion`) in one transaction.
  *
  * If DB persistence fails after extraction, the storage files are deleted to avoid orphans.
  */
@@ -69,7 +61,7 @@ export async function createCourseFromUpload(
   input: CreateCourseInput,
   deps: CreateCourseDeps,
 ): Promise<Course> {
-  const { tenantId, buffer, titleOverride } = input;
+  const { tenantId, buffer, titleOverride, versionLabel, releaseNotes } = input;
   const { prisma, storage } = deps;
 
   const courseId = randomUUID();
@@ -86,33 +78,36 @@ export async function createCourseFromUpload(
   }
 
   const { manifest } = ingest;
-  const launchUrl = `${storagePrefix}/${manifest.primarySco.launchHref}`;
-  const title = titleOverride?.trim() || manifest.title;
+  const release = releaseData(
+    { manifest, storageKey: storagePrefix, files: ingest.files, sizeBytes: ingest.sizeBytes, packageSha256: packageSha256(buffer) },
+    serializeManifest(manifest),
+    titleOverride,
+  );
 
   try {
-    const course = await prisma.course.create({
-      data: {
-        id: courseId,
-        tenantId,
-        title,
-        description: manifest.description,
-        scormVersion: VERSION_MAP[manifest.version],
-        storageKey: storagePrefix,
-        launchUrl,
-        masteryScore: manifest.masteryScore,
-        manifest: serializeManifest(manifest) as Prisma.InputJsonValue,
-        scos: {
-          create: manifest.scos.map((sco, idx) => ({
-            identifier: sco.identifier,
-            title: sco.title,
-            launchHref: sco.launchHref,
-            parameters: sco.parameters,
-            order: idx,
-          })),
+    return await prisma.$transaction(async (tx) => {
+      await tx.course.create({
+        data: {
+          id: courseId,
+          tenantId,
+          ...headColumns(release),
+          scos: {
+            create: manifest.scos.map((sco, idx) => ({
+              identifier: sco.identifier,
+              title: sco.title,
+              launchHref: sco.launchHref,
+              parameters: sco.parameters,
+              order: idx,
+            })),
+          },
         },
-      },
+      });
+      // Release 1 shares the course's storage prefix; later releases get their own.
+      const version = await tx.courseVersion.create({
+        data: { tenantId, courseId, number: 1, label: versionLabel ?? '1.0', releaseNotes: releaseNotes ?? null, ...release },
+      });
+      return tx.course.update({ where: { id: courseId }, data: { currentVersionId: version.id } });
     });
-    return course;
   } catch (err) {
     // Best-effort cleanup of orphaned storage.
     try {
