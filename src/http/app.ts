@@ -133,6 +133,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       )
     : undefined;
 
+  const replay = new ReplayService(prisma, {
+    captureEnabled: env.REPLAY_CAPTURE_ENABLED,
+    maxEventsPerAttempt: env.REPLAY_MAX_EVENTS_PER_ATTEMPT,
+  });
+
   const ai = env.AI_MASTER_KEY
     ? new AiService({
         prisma,
@@ -142,6 +147,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         timeoutMs: env.AI_TIMEOUT_MS,
         maxOutputTokens: env.AI_MAX_OUTPUT_TOKENS,
         fetch: deps.aiFetch,
+        heatmap: (tenantId, courseId, limit) => replay.courseHeatmap(tenantId, courseId, { limit }),
       })
     : undefined;
 
@@ -166,14 +172,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         attemptsRoutes({ prisma, validationMode: env.SCORM_VALIDATION_MODE, events, certificates }),
       );
       if (certificates) await api.register(certificateRoutes({ certificates }));
-      await api.register(
-        replayRoutes({
-          replay: new ReplayService(prisma, {
-            captureEnabled: env.REPLAY_CAPTURE_ENABLED,
-            maxEventsPerAttempt: env.REPLAY_MAX_EVENTS_PER_ATTEMPT,
-          }),
-        }),
-      );
+      await api.register(replayRoutes({ replay }));
       await api.register(analyticsRoutes({ prisma }), { prefix: '/analytics' });
       if (ai) await api.register(aiRoutes({ ai }), { prefix: '/ai' });
       await api.register(embedRoutes({ prisma, env }));

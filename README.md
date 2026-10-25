@@ -67,8 +67,8 @@ POST   /api/v1/attempts/:id/commit            Batched SetValue commit (+ termina
 POST   /api/v1/attempts/:id/sync              Replay an offline commit queue (applied / duplicate / conflict)
 
 POST   /api/v1/auth/attempt-token             Mint a short-lived, attempt-scoped JWT
-GET    /api/v1/runtime.js                     Drop-in SCORM 1.2 / 2004 browser bridge
-GET    /api/v1/play/:attemptId                Hydrated iframe player page
+GET    /api/v1/runtime.js                     Drop-in SCORM 1.2 / 2004 browser bridge (hydrated with ?attemptId&token)
+GET    /api/v1/play/:attemptId                Hydrated iframe player page (?replay=1 for session capture)
 
 GET    /api/v1/analytics/overview
 GET    /api/v1/analytics/courses/:id
@@ -355,7 +355,10 @@ curl -X POST $ENGINE/api/v1/ai/insights -H "X-API-Key: $KEY" \
 - **Grounded in aggregates, not people.** The model sees outcome rates, where
   unfinished attempts stopped (`lesson_location`), the most-failed objectives
   and most-missed questions (with common wrong answers) over the latest 500
-  attempts — never learner ids, names or attempt ids.
+  attempts — never learner ids, names or attempt ids. Course insights also get
+  the session-replay **journey** of the latest 100 attempts: share of attempts
+  reaching each location in course order, dwell, interactions, drop-offs, and
+  the steepest falls in reach (*"reach falls 50% after slide-08"*).
 - **PII redaction.** Emails, card numbers, SSNs, IPs and phone numbers in the
   prompt (course text, typed answers, your question) become `[EMAIL]` etc.
   before it leaves. Turn it off per config (`redactPii: false`) for local models.
@@ -368,7 +371,8 @@ curl -X POST $ENGINE/api/v1/ai/insights -H "X-API-Key: $KEY" \
 - **Cost controls.** A monthly token cap per config (429 `ai_budget_exceeded`
   once spent), `ai.budget.alert` at `alertThreshold` and at the cap, and an
   `enabled` kill-switch. Give `inputCostPerMTok` / `outputCostPerMTok` to get
-  USD costs.
+  USD costs. The cap is checked before each call, so concurrent calls can
+  overshoot it slightly.
 - **Audit.** Every call — succeeded, failed or blocked — is logged with the
   prompt's SHA-256, provider, model, tokens and cost (`GET /ai/calls`, CSV export).
 
@@ -400,9 +404,15 @@ a retried batch is stored once.
   (default 50, at most 200) into per-location reach, dwell, interactions,
   drop-offs (where unfinished attempts stopped) and a 10 × 10 pointer grid.
 
+Without the SDK, add `replay=1` (and `pointer=1` for click positions) to the
+`/play/:attemptId` URL or the hydrated `runtime.js` URL, and the served bridge
+captures the same events itself — tab visibility, idle stretches, navigation
+the moment the location changes, and media playback inside engine-hosted
+(same-origin) content — and drains them on `Terminate`. Hosts that configure
+`window.__SCORMFLOW__` themselves set `replay: { pointer?, idleMs?, flushMs? }`.
+
 Timelines are rebuilt on read; nothing is precomputed. Turn capture off with
 `REPLAY_CAPTURE_ENABLED=false`.
-The cap is checked before each call, so concurrent calls can overshoot it slightly.
 
 ---
 

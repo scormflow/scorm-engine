@@ -253,6 +253,8 @@ paths:
           in: query
           schema: { type: string }
           description: Optional — override the default SCO (engine source only).
+        - $ref: '#/components/parameters/ReplayCapture'
+        - $ref: '#/components/parameters/ReplayPointer'
       responses:
         '200':
           description: HTML player page
@@ -288,17 +290,26 @@ paths:
         <script src="https://your-engine/runtime.js?attemptId=...&token=..."></script>
         <iframe src="./course/index.html"></iframe>
         ```
+
+        With `attemptId` and `token` the script is prefixed with a
+        `window.__SCORMFLOW__` config hydrated from the attempt (CMI state,
+        learner, SCORM version), so `GetValue` answers resume data straight
+        away; it is served `Cache-Control: no-store`. Without them it is the
+        bare, cacheable bridge, configured by a `window.__SCORMFLOW__` object
+        the host page sets first (`apiBase`, `attemptId`, `token`, `version`,
+        `cmi`, optional `replay`).
       security: []
       parameters:
         - name: attemptId
           in: query
-          required: true
-          schema: { type: string, format: uuid }
+          schema: { type: string }
+          description: Attempt to hydrate. Required together with `token`.
         - name: token
           in: query
-          required: true
           schema: { type: string }
           description: Attempt JWT (issued by `/auth/attempt-token`).
+        - $ref: '#/components/parameters/ReplayCapture'
+        - $ref: '#/components/parameters/ReplayPointer'
       responses:
         '200':
           description: JavaScript runtime bridge
@@ -307,6 +318,22 @@ paths:
               schema: { type: string }
             text/javascript:
               schema: { type: string }
+        '400':
+          description: '`token` given without `attemptId`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Token is not valid for this attempt.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Attempt not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   # ─────────────────────────────────────────────────────────────────────────
   # Auth
@@ -2289,6 +2316,21 @@ components:
   # Reusable parameters
   # ───────────────────────────────────────────────────────────────────────
   parameters:
+    ReplayCapture:
+      name: replay
+      in: query
+      description: |
+        `1` / `true` turns on session-replay capture for this launch: tab
+        visibility, idle stretches, navigation and media playback inside
+        same-origin content are sent to `POST /attempts/{id}/replay/events`.
+        Ignored when the engine has `REPLAY_CAPTURE_ENABLED=false`. Keystrokes
+        and typed text are never recorded.
+      schema: { type: string, enum: ['1', 'true', '0', 'false'] }
+    ReplayPointer:
+      name: pointer
+      in: query
+      description: With `replay`, also record where the learner clicks (x / y relative to the content viewport).
+      schema: { type: string, enum: ['1', 'true', '0', 'false'] }
     CourseId:
       name: courseId
       in: path

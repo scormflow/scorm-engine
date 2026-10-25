@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { PrismaClient } from '../db/client.js';
 import type { EventSink } from '../webhooks/events.js';
-import { buildInsightContext } from './context.js';
+import { buildInsightContext, type HeatmapLoader } from './context.js';
 import { KeyVault, keyHint } from './keys.js';
 import { buildPrompt, INSIGHT_KINDS, type InsightKind } from './prompts.js';
 import {
@@ -52,6 +52,8 @@ export interface AiServiceOptions {
   maxOutputTokens?: number | undefined;
   fetch?: typeof fetch | undefined;
   now?: (() => Date) | undefined;
+  /** Session-replay heatmaps: course insights then include the learner journey. */
+  heatmap?: HeatmapLoader | undefined;
 }
 
 export interface AiConfigInput {
@@ -300,7 +302,12 @@ export class AiService {
       fetch: this.options.fetch,
     });
 
-    const context = await buildInsightContext(this.prisma, tenantId, input.courseId);
+    const context = await buildInsightContext(
+      this.prisma,
+      tenantId,
+      input.courseId,
+      this.options.heatmap ? { heatmap: this.options.heatmap } : {},
+    );
     let { system, prompt } = buildPrompt(input.kind, context, question || undefined);
     let redaction = { count: 0, counts: {} as Partial<Record<PiiKind, number>> };
     if (config.redactPii) {
