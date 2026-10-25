@@ -61,6 +61,7 @@ export function createMemoryDb(seed: MemoryDbSeed): MemoryDb {
       course: (a) => tables.courses.find((c) => c.id === a.courseId) ?? null,
       learner: (a) => tables.learners.find((l) => l.id === a.learnerId) ?? null,
       courseVersion: (a) => tables.courseVersions.find((v) => v.id === a.courseVersionId) ?? null,
+      sco: (a) => tables.scos.find((s) => s.id === a.scoId) ?? null,
       objectives: (a) => sortBy(tables.objectives.filter((o) => o.attemptId === a.id), 'index'),
       interactions: (a) => sortBy(tables.interactions.filter((i) => i.attemptId === a.id), 'index'),
     },
