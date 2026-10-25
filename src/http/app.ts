@@ -24,6 +24,7 @@ import { CertificateIssuer } from '../certificates/index.js';
 import { WebhookDispatcher } from '../webhooks/index.js';
 import { createEventBus, type EventBus } from '../events/index.js';
 import { eventRoutes } from './routes/events.js';
+import { installPlugins, pluginsFromEnv, type ScormflowPlugin } from '../plugins/index.js';
 import { TenantRateLimiter, tenantRateLimit } from './rate-limit.js';
 import { registerHealthRoutes } from './health.js';
 import { ENGINE_VERSION } from '../version.js';
@@ -56,6 +57,11 @@ export interface AppDeps {
   startWebhookWorker?: boolean;
   /** Supply a limiter (e.g. with per-tenant `limitFor` overrides); one is built from `RATE_LIMIT_*` otherwise. */
   rateLimiter?: TenantRateLimiter;
+  /**
+   * Plugins to install, in order (`[analyticsPlugin(), myPlugin()]`). When
+   * omitted, the built-ins named by `PLUGINS` are installed; pass `[]` for none.
+   */
+  plugins?: readonly ScormflowPlugin[];
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
@@ -99,10 +105,6 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   events.subscribe('webhooks', (event) => webhooks.enqueue(event).then(() => undefined));
   app.decorate('events', events);
   app.addHook('onReady', async () => events.start());
-  app.addHook('onClose', async () => {
-    await events.close();
-    await webhooks.stop();
-  });
 
   await app.register(apiKeyAuth, { prisma });
   await app.register(attemptAuth);
@@ -125,6 +127,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       )
     : undefined;
 
+  // Plugins see the same bus, database and storage the built-in routes do.
+  const plugins = await installPlugins(app, deps.plugins ?? pluginsFromEnv(env), { env, prisma, storage, events });
+  app.addHook('onClose', async () => {
+    await events.close();
+    await plugins.close();
+    await webhooks.stop();
+  });
+
   const health = { prisma, storage, version: ENGINE_VERSION };
   registerHealthRoutes(app, health, { health: '/healthz', ready: '/readyz' });
 
@@ -146,6 +156,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await api.register(eventRoutes({ bus: events, heartbeatSeconds: env.EVENT_STREAM_HEARTBEAT_SECONDS }), {
         prefix: '/events',
       });
+      await api.register(plugins.routes, { prefix: '/plugins' });
     },
     { prefix: '/api/v1' },
   );

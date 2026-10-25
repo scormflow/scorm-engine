@@ -109,6 +109,20 @@ const baseSchema = z.object({
   EVENT_BUS_MAX_LENGTH: z.coerce.number().int().min(1000).default(100_000),
   // Comment line sent on idle `GET /events/stream` connections so proxies keep them open.
   EVENT_STREAM_HEARTBEAT_SECONDS: z.coerce.number().int().positive().default(15),
+
+  // Built-in plugins to install, comma-separated (e.g. `analytics`). Only read
+  // when the embedder passes no `plugins` to `buildApp`; code that builds its
+  // own list decides for itself.
+  PLUGINS: z.preprocess(
+    (v) =>
+      typeof v === 'string'
+        ? v
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : v,
+    z.array(z.enum(['analytics'])).default([]),
+  ),
 });
 
 const envSchema = baseSchema.superRefine((env, ctx) => {

@@ -29,6 +29,7 @@ export function createTestEnv(overrides: Partial<Env> = {}): Env {
     EVENT_BUS_GROUP: 'scormflow',
     EVENT_BUS_MAX_LENGTH: 100_000,
     EVENT_STREAM_HEARTBEAT_SECONDS: 15,
+    PLUGINS: [],
     ...overrides,
   };
 }

@@ -44,6 +44,8 @@ services:
       # Set to `redis` to carry engine events over the bundled Redis (needed
       # once you run more than one engine replica).
       EVENT_BUS_DRIVER: ${EVENT_BUS_DRIVER:-memory}
+      # Built-in plugins, comma-separated (e.g. `analytics`).
+      PLUGINS: ${PLUGINS:-}
     ports:
       - "3000:3000"
     volumes:
